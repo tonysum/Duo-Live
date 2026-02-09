@@ -6,6 +6,7 @@ Usage:
     python -m live status                               # 查看状态 & 资金
     python -m live trades                               # 查看历史成交
     python -m live signals                              # 查看信号历史
+    python -m live live-trades [N]                       # 查看实盘交易记录
     python -m live order <symbol> <price> [qty]          # 手动下单
         [--long] [--tp N] [--sl N] [--leverage N] [--margin N]
     python -m live orders [symbol]                      # 查看挂单
@@ -138,11 +139,38 @@ def _run_order(symbol: str, price: str, quantity: str | None = None,
 
 def main():
     # ── Logging ──────────────────────────────────────────────────────
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    import os
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "duo-live.log")
+
+    log_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    # Console: INFO
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(log_fmt)
+
+    # File: DEBUG, 10MB × 5 backups
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(log_fmt)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.INFO)
 
     config = LiveTradingConfig()
 
@@ -173,6 +201,43 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
     elif cmd == "signals":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
         print_signals(config, limit=limit)
+
+    elif cmd == "live-trades":
+        from rich.console import Console
+        from rich.table import Table
+        from .paper_store import PaperStore
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+        store = PaperStore(config.paper_db_path)
+        trades = store.get_live_trades(limit=limit)
+        store.close()
+        console = Console()
+        if not trades:
+            console.print("[dim]暂无实盘交易记录[/dim]")
+        else:
+            table = Table(title=f"📋 实盘交易记录 (最近 {len(trades)} 笔)", show_lines=True)
+            table.add_column("时间", style="dim")
+            table.add_column("币种", style="bold")
+            table.add_column("方向")
+            table.add_column("事件")
+            table.add_column("开仓价", justify="right")
+            table.add_column("数量", justify="right")
+            table.add_column("保证金", justify="right")
+            table.add_column("Order/Algo ID", style="dim")
+            event_colors = {"entry": "cyan", "tp": "green", "sl": "red", "timeout": "yellow", "close": "magenta"}
+            for t in trades:
+                color = event_colors.get(t.event, "white")
+                dir_color = "green" if t.side == "LONG" else "red"
+                table.add_row(
+                    t.timestamp[:19] if t.timestamp else "",
+                    t.symbol,
+                    f"[{dir_color}]{t.side}[/{dir_color}]",
+                    f"[{color}]{t.event.upper()}[/{color}]",
+                    t.entry_price,
+                    t.quantity,
+                    f"{t.margin_usdt}U" if t.margin_usdt else "",
+                    t.order_id or t.algo_id or "",
+                )
+            console.print(table)
 
     elif cmd == "order":
         # Two modes:
@@ -451,6 +516,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("  status                  查看状态 & 资金")
         print("  trades                  查看历史成交")
         print("  signals                 查看信号历史")
+        print("  live-trades [N]         查看实盘交易记录 (默认50条)")
         print("  order <sym> <price>     手动下单")
         print("    [qty] [--long] [--tp N] [--sl N] [--leverage N] [--margin N]")
         print("  orders [symbol]         查看挂单")

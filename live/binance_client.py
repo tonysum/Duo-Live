@@ -331,6 +331,22 @@ class BinanceFuturesClient:
             "unrealized_pnl": Decimal("0"),
         }
 
+    # ── WebSocket listenKey management ────────────────────────────────
+
+    async def create_listen_key(self) -> str:
+        """Create a listenKey for user data stream. POST /fapi/v1/listenKey"""
+        data = await self._request("POST", "/fapi/v1/listenKey", signed=False)
+        return data["listenKey"]
+
+    async def keepalive_listen_key(self) -> None:
+        """Keepalive listenKey (call every 30 min). PUT /fapi/v1/listenKey"""
+        # PUT not in _request, use client directly
+        await self.client.put("/fapi/v1/listenKey", headers={"X-MBX-APIKEY": self.api_key})
+
+    async def close_listen_key(self) -> None:
+        """Close listenKey. DELETE /fapi/v1/listenKey"""
+        await self.client.delete("/fapi/v1/listenKey", headers={"X-MBX-APIKEY": self.api_key})
+
     async def get_position_risk(self, symbol: str | None = None) -> list[PositionRisk]:
         """Get current position information. GET /fapi/v2/positionRisk"""
         params: dict[str, Any] = {}

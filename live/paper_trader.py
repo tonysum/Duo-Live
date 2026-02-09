@@ -78,10 +78,12 @@ class PaperTrader:
         self.live_executor = None
         self.live_monitor = None
         self.notifier = None
+        self.ws_stream = None
         if self.config.live_mode:
             from .live_executor import LiveOrderExecutor
             from .live_position_monitor import LivePositionMonitor
             from .notifier import TelegramNotifier
+            from .ws_stream import BinanceUserStream
             self.notifier = TelegramNotifier()
             self.live_executor = LiveOrderExecutor(
                 client=self.client,
@@ -94,6 +96,8 @@ class PaperTrader:
                 notifier=self.notifier,
                 store=self.store,
             )
+            # WebSocket user data stream (real-time fills)
+            self.ws_stream = BinanceUserStream(client=self.client)
 
     async def start(self):
         """Start all sub-services concurrently."""
@@ -128,6 +132,10 @@ class PaperTrader:
                 ]
                 if self.live_monitor:
                     tasks.append(self.live_monitor.run_forever())
+                    tasks.append(self._daily_pnl_report())
+                if self.ws_stream:
+                    self.ws_stream.on_order_update = self.live_monitor.handle_order_update
+                    tasks.append(self.ws_stream.run_forever())
                 await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 logger.info("PaperTrader cancelled")
@@ -372,6 +380,41 @@ class PaperTrader:
                 logger.error("Equity snapshot error: %s", e)
 
             await asyncio.sleep(3600)  # Every hour
+
+    async def _daily_pnl_report(self):
+        """Send P&L summary to Telegram periodically (every 4 hours) in live mode."""
+        REPORT_INTERVAL = 4 * 3600  # 4 hours
+        while self._running:
+            await asyncio.sleep(REPORT_INTERVAL)
+            if not self.notifier or not self.notifier.enabled:
+                continue
+            try:
+                bal = await self.client.get_account_balance()
+                daily_pnl = await self.client.get_daily_realized_pnl()
+
+                # Count open positions
+                all_pos = await self.client.get_position_risk()
+                open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
+
+                # Count today's live trades
+                from datetime import datetime, timezone
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                all_live = self.store.get_live_trades(limit=9999)
+                today_trades = sum(
+                    1 for t in all_live
+                    if t.timestamp and t.timestamp.startswith(today)
+                )
+
+                await self.notifier.notify_daily_summary(
+                    total_balance=f"{bal['total_balance']:,.2f}",
+                    daily_pnl=f"{daily_pnl:+,.2f}",
+                    unrealized_pnl=f"{bal['unrealized_pnl']:+,.2f}",
+                    open_positions=open_count,
+                    trades_today=today_trades,
+                )
+                logger.info("📊 已推送每日盈亏报告")
+            except Exception as e:
+                logger.warning("推送盈亏报告失败: %s", e)
 
     # ------------------------------------------------------------------
     # Display

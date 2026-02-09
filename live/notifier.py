@@ -157,3 +157,27 @@ class TelegramNotifier:
                 f"  {symbol} 暴涨比 {surge_ratio}\n"
                 f"  原因: {reason}"
             )
+
+    async def notify_daily_summary(
+        self,
+        total_balance: str,
+        daily_pnl: str,
+        unrealized_pnl: str,
+        open_positions: int,
+        trades_today: int,
+    ):
+        """Send daily P&L summary report."""
+        pnl_val = float(daily_pnl) if daily_pnl else 0
+        pnl_emoji = "📈" if pnl_val >= 0 else "📉"
+        unreal_val = float(unrealized_pnl) if unrealized_pnl else 0
+        unreal_emoji = "🟢" if unreal_val >= 0 else "🔴"
+
+        await self.send(
+            f"{pnl_emoji} <b>每日盈亏报告</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"  余额:     {total_balance} USDT\n"
+            f"  今日盈亏: {daily_pnl} USDT\n"
+            f"  {unreal_emoji} 浮动盈亏: {unrealized_pnl} USDT\n"
+            f"  持仓数:   {open_positions}\n"
+            f"  今日交易: {trades_today} 笔"
+        )
