@@ -196,7 +196,6 @@ class TelegramBot:
                 positions = store.get_open_positions() if store else []
                 trades = store.get_trades(limit=9999) if store else []
 
-                from datetime import datetime, timezone
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 today_trades = [t for t in trades if t.exit_time and t.exit_time.startswith(today)]
                 today_pnl = sum(float(t.pnl) for t in today_trades)

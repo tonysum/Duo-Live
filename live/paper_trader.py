@@ -231,14 +231,32 @@ class PaperTrader:
         symbol = signal.symbol
         now = utc_now()
 
-        # ── Guard checks (reuse paper executor's state) ─────────────
-        existing = self.store.get_position(symbol)
-        if existing:
-            self.console.print(f"  [dim]Skip {symbol}: already in position[/dim]")
-            return
-        if self.store.position_count() >= self.config.max_positions:
-            self.console.print(f"  [dim]Skip {symbol}: max positions reached[/dim]")
-            return
+        # ── Guard checks ─────────────────────────────────────────
+        if self.config.live_mode:
+            # Live mode: check actual exchange positions
+            try:
+                all_pos = await self.client.get_position_risk()
+                open_pos = [p for p in all_pos if float(p.position_amt) != 0]
+                open_symbols = {p.symbol for p in open_pos}
+
+                if symbol in open_symbols:
+                    self.console.print(f"  [dim]Skip {symbol}: already in position (exchange)[/dim]")
+                    return
+                if len(open_pos) >= self.config.max_positions:
+                    self.console.print(f"  [dim]Skip {symbol}: max positions reached ({len(open_pos)}/{self.config.max_positions})[/dim]")
+                    return
+            except Exception as e:
+                logger.warning("Failed to check exchange positions: %s", e)
+                return  # fail-closed for safety
+        else:
+            # Paper mode: check paper store
+            existing = self.store.get_position(symbol)
+            if existing:
+                self.console.print(f"  [dim]Skip {symbol}: already in position[/dim]")
+                return
+            if self.store.position_count() >= self.config.max_positions:
+                self.console.print(f"  [dim]Skip {symbol}: max positions reached[/dim]")
+                return
 
         # ── Get real-time price ──────────────────────────────────
         try:
