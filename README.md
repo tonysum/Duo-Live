@@ -67,7 +67,7 @@ python -m live trades                 # 历史成交
 python -m live signals                # 信号历史
 ```
 
-### 通知测试
+### 通知测试（Telegram）
 
 ```bash
 python -m live test-notify            # 发送测试消息

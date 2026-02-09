@@ -85,7 +85,6 @@ class PaperTrader:
             from .live_position_monitor import LivePositionMonitor
             from .notifier import TelegramNotifier
             from .ws_stream import BinanceUserStream
-            from .telegram_bot import TelegramBot
             self.notifier = TelegramNotifier()
             self.live_executor = LiveOrderExecutor(
                 client=self.client,
@@ -100,12 +99,21 @@ class PaperTrader:
             )
             # WebSocket user data stream (real-time fills)
             self.ws_stream = BinanceUserStream(client=self.client)
-            # Telegram bot for remote control
-            self.tg_bot = TelegramBot(
-                bot_token=self.notifier.bot_token,
-                chat_id=self.notifier.chat_id,
-                paper_trader=self,
-            )
+
+        # Telegram bot for remote control (both paper & live modes)
+        import os
+        from dotenv import load_dotenv
+        from .telegram_bot import TelegramBot
+        load_dotenv()
+        bot_token = (self.notifier.bot_token if self.notifier
+                     else os.getenv("TELEGRAM_BOT_TOKEN", ""))
+        chat_id = (self.notifier.chat_id if self.notifier
+                   else os.getenv("TELEGRAM_CHAT_ID", ""))
+        self.tg_bot = TelegramBot(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            paper_trader=self,
+        )
 
     async def start(self):
         """Start all sub-services concurrently."""

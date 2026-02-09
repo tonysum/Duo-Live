@@ -15,18 +15,18 @@ class LiveTradingConfig:
 
     # ── Capital & Leverage ──────────────────────────────────────────────
     initial_capital: Decimal = Decimal("10000")
-    leverage: int = 4
-    position_size_pct: Decimal = Decimal("0.05")
-    max_positions: int = 10
-    max_entries_per_day: int = 20
-    max_position_value_ratio: float = 0.5
+    leverage: int = 3 #回测时是4，实盘时是3
+    position_size_pct: Decimal = Decimal("0.015")#回测时是0.5，实盘时是0.015
+    max_positions: int = 6 #回测时是10，实盘时是6
+    max_entries_per_day: int = 4 #回测时是20，实盘时是4
+    max_position_value_ratio: float = 0.5 
     min_capital_ratio: float = 0.1
     commission_rate: Decimal = Decimal("0.0004")
 
     # ── Execution Mode ──────────────────────────────────────────────────
     live_mode: bool = False  # True = real orders, False = paper trading
-    live_fixed_margin_usdt: Decimal = Decimal("100")  # 固定保证金 (0=按比例)
-    daily_loss_limit_usdt: Decimal = Decimal("200")   # 每日亏损限额 (0=不限)
+    live_fixed_margin_usdt: Decimal = Decimal("5")  # 固定保证金 (0=按比例)
+    daily_loss_limit_usdt: Decimal = Decimal("50")   # 每日亏损限额 (0=不限)
 
     # ── V2 Strategy Parameters ──────────────────────────────────────────
     stop_loss_pct: float = 18.0
