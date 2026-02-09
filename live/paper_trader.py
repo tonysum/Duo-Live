@@ -79,11 +79,13 @@ class PaperTrader:
         self.live_monitor = None
         self.notifier = None
         self.ws_stream = None
+        self.tg_bot = None
         if self.config.live_mode:
             from .live_executor import LiveOrderExecutor
             from .live_position_monitor import LivePositionMonitor
             from .notifier import TelegramNotifier
             from .ws_stream import BinanceUserStream
+            from .telegram_bot import TelegramBot
             self.notifier = TelegramNotifier()
             self.live_executor = LiveOrderExecutor(
                 client=self.client,
@@ -98,6 +100,12 @@ class PaperTrader:
             )
             # WebSocket user data stream (real-time fills)
             self.ws_stream = BinanceUserStream(client=self.client)
+            # Telegram bot for remote control
+            self.tg_bot = TelegramBot(
+                bot_token=self.notifier.bot_token,
+                chat_id=self.notifier.chat_id,
+                paper_trader=self,
+            )
 
     async def start(self):
         """Start all sub-services concurrently."""
@@ -136,6 +144,8 @@ class PaperTrader:
                 if self.ws_stream:
                     self.ws_stream.on_order_update = self.live_monitor.handle_order_update
                     tasks.append(self.ws_stream.run_forever())
+                if self.tg_bot and self.tg_bot.enabled:
+                    tasks.append(self.tg_bot.run_forever())
                 await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 logger.info("PaperTrader cancelled")
