@@ -73,6 +73,10 @@ export default function TradeChart({
             wickUpColor: "#22c55e80",
             wickDownColor: "#ef444480",
         });
+        // Wider candlestick bars
+        chart.timeScale().applyOptions({
+            barSpacing: 9,
+        });
 
         const candleData = klines.map((k) => ({
             time: k.time as any,
@@ -89,12 +93,12 @@ export default function TradeChart({
             priceScaleId: "volume",
         });
         volumeSeries.priceScale().applyOptions({
-            scaleMargins: { top: 0.85, bottom: 0 },
+            scaleMargins: { top: 0.7, bottom: 0 },
         });
         const volData = klines.map((k) => ({
             time: k.time as any,
             value: k.volume,
-            color: k.close >= k.open ? "#22c55e30" : "#ef444430",
+            color: k.close >= k.open ? "#22c55e90" : "#ef444480",
         }));
         volumeSeries.setData(volData);
 
