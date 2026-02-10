@@ -183,3 +183,71 @@ SQLite 存储在 `data/paper_trades.db`，包含以下表：
 - `rich` — 控制台格式化输出
 - `python-dotenv` — 环境变量加载
 - `sqlite3` — 内置数据库
+
+## 云服务器部署
+
+### 环境准备
+
+```bash
+# 上传代码到服务器
+scp -r duo-live user@server:/opt/duo-live
+
+# Python 环境
+cd /opt/duo-live
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 前端环境
+cd web
+npm install
+npm run build
+cd ..
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 填入以下内容：
+#   BINANCE_API_KEY=xxx
+#   BINANCE_API_SECRET=xxx
+#   TELEGRAM_BOT_TOKEN=xxx
+#   TELEGRAM_CHAT_ID=xxx
+#   TRADING_PASSWORD=xxx     # 手动下单密码
+```
+
+### 防火墙 / 安全组
+
+| 端口 | 用途 |
+|------|------|
+| `8899` | 后端 API（跟随 trader 自动启动） |
+| `3000` | 前端 Next.js |
+
+> 建议使用 Nginx 反向代理统一到 80/443 端口，不直接暴露 8899 和 3000。
+
+### 使用 PM2 管理进程
+
+项目根目录已包含 `ecosystem.config.js`，使用 PM2 管理后端和前端进程：
+
+```bash
+# 启动所有服务
+pm2 start ecosystem.config.js
+
+# 常用命令
+pm2 status                # 查看状态
+pm2 logs                  # 查看日志
+pm2 logs duo-backend      # 只看后端日志
+pm2 restart all           # 重启所有
+pm2 stop all              # 停止所有
+
+# 持久化（开机自启）
+pm2 save
+pm2 startup
+```
+
+> **注意**：`ecosystem.config.js` 中的 `cwd` 默认为 `/opt/duo-live`，请根据实际部署路径修改。
+
+### 访问方式
+
+前端 API 地址会自动适配访问者的 hostname，无需额外配置：
+
+- **局域网**：`http://服务器内网IP:3000`
+- **公网**：`http://服务器公网IP:3000`（需开放安全组）
