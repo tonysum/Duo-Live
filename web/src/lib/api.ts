@@ -85,8 +85,25 @@ export interface OrderRequest {
 
 // ── Fetch helpers ──────────────────────────────────────────────────
 
+async function fetchWithRetry(url: string, opts?: RequestInit, retries = 1): Promise<Response> {
+    for (let i = 0; i <= retries; i++) {
+        try {
+            const res = await fetch(url, opts);
+            return res;
+        } catch (err) {
+            // ERR_EMPTY_RESPONSE / network error — retry once
+            if (i < retries) {
+                await new Promise(r => setTimeout(r, 500));
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error("fetch failed");
+}
+
 async function get<T>(path: string): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`);
+    const res = await fetchWithRetry(`${API_BASE}${path}`);
     if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || res.statusText);
@@ -95,7 +112,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetchWithRetry(`${API_BASE}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: body ? JSON.stringify(body) : undefined,
