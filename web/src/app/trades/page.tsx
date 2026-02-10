@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, PaperTrade, Kline } from "@/lib/api";
+import { api, LiveTrade, Kline } from "@/lib/api";
 import TradeChart from "@/components/TradeChart";
 
 export default function TradesPage() {
-    const [trades, setTrades] = useState<PaperTrade[]>([]);
-    const [selected, setSelected] = useState<PaperTrade | null>(null);
+    const [trades, setTrades] = useState<LiveTrade[]>([]);
+    const [selected, setSelected] = useState<LiveTrade | null>(null);
     const [klines, setKlines] = useState<Kline[]>([]);
     const [interval, setInterval_] = useState("15m");
     const [loading, setLoading] = useState(false);
@@ -30,7 +30,7 @@ export default function TradesPage() {
             .finally(() => setLoading(false));
     }, [selected, interval]);
 
-    // Compute markers and price lines for selected trade
+    // Markers for entry and exit points on the chart
     const markers = selected
         ? [
             ...(selected.entry_time
@@ -38,7 +38,7 @@ export default function TradesPage() {
                     {
                         type: "entry" as const,
                         time: Math.floor(new Date(selected.entry_time).getTime() / 1000),
-                        price: parseFloat(selected.entry_price),
+                        price: selected.entry_price,
                         label: `入场 ${selected.entry_price}`,
                     },
                 ]
@@ -48,7 +48,7 @@ export default function TradesPage() {
                     {
                         type: "exit" as const,
                         time: Math.floor(new Date(selected.exit_time).getTime() / 1000),
-                        price: parseFloat(selected.exit_price),
+                        price: selected.exit_price,
                         label: `出场 ${selected.exit_price}`,
                     },
                 ]
@@ -56,19 +56,8 @@ export default function TradesPage() {
         ]
         : [];
 
-    const entryPrice = selected ? parseFloat(selected.entry_price) : undefined;
-    const exitPrice =
-        selected && selected.exit_price ? parseFloat(selected.exit_price) : undefined;
-
-    // Estimate TP/SL from entry price and tp_pct / config
-    const tpPrice =
-        selected && entryPrice && selected.tp_pct_used
-            ? entryPrice * (1 - selected.tp_pct_used / 100) // short position
-            : undefined;
-    const slPrice =
-        selected && entryPrice
-            ? entryPrice * (1 + 0.18) // 18% SL for short
-            : undefined;
+    const entryPrice = selected ? selected.entry_price : undefined;
+    const exitPrice = selected ? selected.exit_price : undefined;
 
     return (
         <div className="flex gap-0 -mx-6 -mt-6" style={{ height: "calc(100vh - 0px)" }}>
@@ -79,8 +68,6 @@ export default function TradesPage() {
                 </div>
 
                 {trades.map((t, i) => {
-                    const pnl = parseFloat(t.pnl);
-                    const pnlPct = parseFloat(t.pnl_pct);
                     const isSelected = selected === t;
 
                     return (
@@ -94,29 +81,29 @@ export default function TradesPage() {
                                 <div className="flex items-center gap-2">
                                     <span className="font-medium text-sm">{t.symbol}</span>
                                     <span
-                                        className={`text-[10px] px-1 py-0.5 rounded ${t.side === "short"
-                                                ? "bg-red-500/20 text-red-400"
-                                                : "bg-green-500/20 text-green-400"
+                                        className={`text-[10px] px-1 py-0.5 rounded ${t.side === "SHORT"
+                                            ? "bg-red-500/20 text-red-400"
+                                            : "bg-green-500/20 text-green-400"
                                             }`}
                                     >
-                                        {t.side.toUpperCase()}
+                                        {t.side}
                                     </span>
                                 </div>
                                 <span
-                                    className={`text-sm font-mono font-medium ${pnl >= 0 ? "text-[var(--accent-green)]" : "text-[var(--accent-red)]"
+                                    className={`text-sm font-mono font-medium ${t.pnl_usdt >= 0 ? "text-[var(--accent-green)]" : "text-[var(--accent-red)]"
                                         }`}
                                 >
-                                    {pnl >= 0 ? "+" : ""}
-                                    {pnlPct.toFixed(1)}%
+                                    {t.pnl_usdt >= 0 ? "+" : ""}
+                                    {t.pnl_usdt.toFixed(2)}
                                 </span>
                             </div>
 
                             <div className="flex items-center justify-between mt-1">
                                 <span className="text-[10px] text-[var(--text-muted)]">
-                                    {t.exit_time?.slice(0, 16) || "—"}
+                                    {t.exit_time?.slice(0, 16).replace("T", " ") || "—"}
                                 </span>
-                                <span className="text-[10px] text-[var(--text-muted)]">
-                                    {t.exit_reason}
+                                <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                                    {t.entry_price} → {t.exit_price}
                                 </span>
                             </div>
                         </div>
@@ -137,28 +124,32 @@ export default function TradesPage() {
                             <div className="flex items-center gap-3">
                                 <span className="font-bold">{selected.symbol}</span>
                                 <span
-                                    className={`text-xs px-1.5 py-0.5 rounded ${selected.side === "short"
-                                            ? "bg-red-500/20 text-red-400"
-                                            : "bg-green-500/20 text-green-400"
+                                    className={`text-xs px-1.5 py-0.5 rounded ${selected.side === "SHORT"
+                                        ? "bg-red-500/20 text-red-400"
+                                        : "bg-green-500/20 text-green-400"
                                         }`}
                                 >
-                                    {selected.side.toUpperCase()}
+                                    {selected.side}
                                 </span>
-                                <span className="text-xs text-[var(--text-muted)]">
-                                    {selected.hold_hours.toFixed(1)}h |{" "}
-                                    TP {selected.tp_pct_used}% |{" "}
-                                    {selected.strength}
+                                <span
+                                    className={`text-xs font-medium ${selected.pnl_usdt >= 0
+                                        ? "text-[var(--accent-green)]"
+                                        : "text-[var(--accent-red)]"
+                                        }`}
+                                >
+                                    {selected.pnl_usdt >= 0 ? "+" : ""}
+                                    {selected.pnl_usdt.toFixed(2)} USDT
                                 </span>
                             </div>
 
                             <div className="flex gap-1">
-                                {["5m", "15m", "1h", "4h"].map((iv) => (
+                                {["5m", "15m", "1h", "4h", "1d", "1w", "1M"].map((iv) => (
                                     <button
                                         key={iv}
                                         onClick={() => setInterval_(iv)}
                                         className={`px-2 py-1 text-xs rounded transition-colors ${interval === iv
-                                                ? "bg-[var(--accent-blue)] text-white"
-                                                : "text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                            ? "bg-[var(--accent-blue)] text-white"
+                                            : "text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
                                             }`}
                                     >
                                         {iv}
@@ -179,8 +170,6 @@ export default function TradesPage() {
                                     markers={markers}
                                     entryPrice={entryPrice}
                                     exitPrice={exitPrice}
-                                    tpPrice={tpPrice}
-                                    slPrice={slPrice}
                                 />
                             ) : (
                                 <div className="flex items-center justify-center h-full text-[var(--text-muted)]">
@@ -191,18 +180,17 @@ export default function TradesPage() {
 
                         {/* Trade details bar */}
                         <div className="px-4 py-2 border-t border-[var(--border)] flex gap-6 text-xs text-[var(--text-secondary)]">
-                            <span>入场: {selected.entry_price}</span>
-                            <span>出场: {selected.exit_price}</span>
+                            <span>入场: {selected.entry_price} ({selected.entry_time?.slice(11, 19)})</span>
+                            <span>出场: {selected.exit_price} ({selected.exit_time?.slice(11, 19)})</span>
                             <span
                                 className={
-                                    parseFloat(selected.pnl) >= 0
+                                    selected.pnl_usdt >= 0
                                         ? "text-[var(--accent-green)]"
                                         : "text-[var(--accent-red)]"
                                 }
                             >
-                                盈亏: {selected.pnl} ({selected.pnl_pct}%)
+                                盈亏: {selected.pnl_usdt >= 0 ? "+" : ""}{selected.pnl_usdt.toFixed(2)} USDT
                             </span>
-                            <span>原因: {selected.exit_reason}</span>
                         </div>
                     </>
                 ) : (

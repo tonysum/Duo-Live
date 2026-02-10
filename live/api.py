@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -44,14 +45,14 @@ class PositionItem(BaseModel):
 
 class LiveTradeItem(BaseModel):
     symbol: str
-    side: str
-    event: str
-    entry_price: str
-    exit_price: str
-    quantity: str
-    pnl_usdt: str
-    pnl_pct: str
-    timestamp: str
+    side: str            # LONG / SHORT
+    entry_price: float
+    exit_price: float
+    entry_time: str
+    exit_time: str
+    quantity: float
+    pnl_usdt: float
+    leverage: int = 0
 
 
 class SignalItem(BaseModel):
@@ -76,11 +77,13 @@ class OrderRequest(BaseModel):
     symbol: str
     side: str  # "BUY" or "SELL"
     order_type: str  # "MARKET" or "LIMIT"
-    margin_usdt: float
+    margin_usdt: float = 0
+    quantity: Optional[float] = None  # Direct quantity (overrides margin calc)
     price: Optional[float] = None  # Required for LIMIT
     tp_pct: Optional[float] = None
     sl_pct: Optional[float] = None
     leverage: int = 3
+    trading_password: str = ""
 
 
 class ConfigResponse(BaseModel):
@@ -95,6 +98,55 @@ class ConfigResponse(BaseModel):
     surge_threshold: float
     live_fixed_margin_usdt: float
     daily_loss_limit_usdt: float
+
+
+def _pair_trades(raw_fills: list[dict]) -> list[dict]:
+    """Pair entry and exit fills into complete round-trip trades.
+
+    Entry fill: realizedPnl == 0 (opening position)
+    Exit fill:  realizedPnl != 0 (closing position, has PnL)
+    Groups by symbol, pairs chronologically.
+    """
+    from collections import defaultdict
+
+    fills = sorted(raw_fills, key=lambda f: int(f.get("time", 0)))
+    open_entries: dict[str, list[dict]] = defaultdict(list)
+    completed: list[dict] = []
+
+    for f in fills:
+        symbol = f.get("symbol", "")
+        pnl = float(f.get("realizedPnl", "0"))
+        price = float(f.get("price", "0"))
+        qty = float(f.get("qty", "0"))
+        ts_ms = int(f.get("time", 0))
+        side_raw = f.get("side", "")  # BUY or SELL from Binance
+
+        if abs(pnl) < 0.0001:
+            # Entry fill
+            open_entries[symbol].append({
+                "price": price, "qty": qty,
+                "time": ts_ms, "side_raw": side_raw,
+            })
+        else:
+            # Exit fill — pair with earliest entry for this symbol
+            entry = open_entries[symbol].pop(0) if open_entries[symbol] else None
+            pos_side = "SHORT" if side_raw == "BUY" else "LONG"
+            entry_price = entry["price"] if entry else 0.0
+            entry_time = entry["time"] if entry else ts_ms
+
+            completed.append({
+                "symbol": symbol,
+                "side": pos_side,
+                "entry_price": entry_price,
+                "exit_price": price,
+                "entry_time": entry_time,
+                "exit_time": ts_ms,
+                "quantity": qty,
+                "pnl_usdt": pnl,
+            })
+
+    completed.sort(key=lambda t: t["exit_time"], reverse=True)
+    return completed
 
 
 # ── App factory ──────────────────────────────────────────────────────
@@ -170,34 +222,43 @@ def create_app(trader) -> FastAPI:
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/trades", response_model=list[LiveTradeItem])
-    async def get_trades(limit: int = Query(50, ge=1, le=500)):
-        """Get live trade history."""
-        store = trader.store
-        if not store:
-            return []
-
-        trades = store.get_live_trades(limit=limit)
-        return [
-            LiveTradeItem(
-                symbol=t.symbol,
-                side=t.side,
-                event=t.event,
-                entry_price=t.entry_price,
-                exit_price=t.exit_price,
-                quantity=t.quantity,
-                pnl_usdt=t.pnl_usdt,
-                pnl_pct=t.pnl_pct,
-                timestamp=t.timestamp,
-            )
-            for t in trades
-        ]
+    async def get_trades(limit: int = Query(100, ge=1, le=1000)):
+        """Get completed trades (entry+exit paired) from Binance."""
+        try:
+            # Fetch enough raw fills to pair (entries + exits)
+            raw = await trader.client.get_user_trades(limit=limit * 3)
+            paired = _pair_trades(raw)
+            result = []
+            for t in paired[:limit]:
+                entry_ts = datetime.fromtimestamp(
+                    t["entry_time"] / 1000, tz=timezone.utc
+                ).isoformat() if t["entry_time"] else ""
+                exit_ts = datetime.fromtimestamp(
+                    t["exit_time"] / 1000, tz=timezone.utc
+                ).isoformat() if t["exit_time"] else ""
+                result.append(LiveTradeItem(
+                    symbol=t["symbol"],
+                    side=t["side"],
+                    entry_price=t["entry_price"],
+                    exit_price=t["exit_price"],
+                    entry_time=entry_ts,
+                    exit_time=exit_ts,
+                    quantity=t["quantity"],
+                    pnl_usdt=t["pnl_usdt"],
+                ))
+            return result
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
 
     @app.get("/api/signals", response_model=list[SignalItem])
     async def get_signals(limit: int = Query(100, ge=1, le=1000)):
-        """Get signal events."""
+        """Get signal events (only last 24h)."""
         store = trader.store
         if not store:
             return []
+
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
         events = store.get_signal_events(limit=limit)
         return [
@@ -210,6 +271,7 @@ def create_app(trader) -> FastAPI:
                 reject_reason=e.reject_reason,
             )
             for e in events
+            if e.timestamp >= cutoff
         ]
 
     @app.get("/api/config", response_model=ConfigResponse)
@@ -300,17 +362,22 @@ def create_app(trader) -> FastAPI:
     @app.post("/api/order")
     async def place_order(req: OrderRequest):
         """Place a manual order with optional TP/SL."""
+        # Password check
+        expected_pw = os.environ.get("TRADING_PASSWORD", "")
+        if expected_pw and req.trading_password != expected_pw:
+            raise HTTPException(403, detail="交易密码错误")
+
+        if not req.quantity and not req.margin_usdt:
+            raise HTTPException(400, detail="请输入保证金或数量")
+
         try:
             # Set leverage
             await trader.client.set_leverage(req.symbol.upper(), req.leverage)
 
-            # Get current price for quantity calculation
+            # Get current price
             ticker = await trader.client.get_ticker_price(req.symbol.upper())
             current_price = float(ticker.price)
             price = req.price if req.order_type == "LIMIT" else current_price
-
-            # Calculate quantity: margin * leverage / price
-            quantity_raw = (req.margin_usdt * req.leverage) / price
 
             # Get precision
             info = await trader.client.get_exchange_info()
@@ -320,7 +387,12 @@ def create_app(trader) -> FastAPI:
                     qty_precision = s.quantity_precision
                     break
 
-            quantity = round(quantity_raw, qty_precision)
+            # Calculate quantity: direct input or margin-based
+            if req.quantity:
+                quantity = round(req.quantity, qty_precision)
+            else:
+                quantity_raw = (req.margin_usdt * req.leverage) / price
+                quantity = round(quantity_raw, qty_precision)
 
             # Determine position side
             is_hedge = await trader.client.get_position_mode()

@@ -260,13 +260,21 @@ class LiveTrader:
 
             if symbol in combined_symbols:
                 self.console.print(f"  [dim]Skip {symbol}: already in position (exchange/pending)[/dim]")
+                self.store.save_signal_event(SignalEvent(
+                    timestamp=now.isoformat(), symbol=symbol,
+                    surge_ratio=signal.surge_ratio, price="",
+                    accepted=False, reject_reason="already in position",
+                ))
                 return False
             if combined_count >= self.config.max_positions:
-                self.console.print(
-                    f"  [dim]Skip {symbol}: max positions reached "
-                    f"({len(open_pos)} exchange + {len(pending)} pending "
-                    f"≥ {self.config.max_positions})[/dim]"
-                )
+                reason = (f"max positions reached ({len(open_pos)} exchange"
+                          f" + {len(pending)} pending ≥ {self.config.max_positions})")
+                self.console.print(f"  [dim]Skip {symbol}: {reason}[/dim]")
+                self.store.save_signal_event(SignalEvent(
+                    timestamp=now.isoformat(), symbol=symbol,
+                    surge_ratio=signal.surge_ratio, price="",
+                    accepted=False, reject_reason=reason,
+                ))
                 return False
         except Exception as e:
             logger.warning("Failed to check exchange positions: %s", e)
@@ -278,6 +286,11 @@ class LiveTrader:
             entry_price = ticker.price
         except Exception as e:
             logger.warning("Failed to get price for %s: %s", symbol, e)
+            self.store.save_signal_event(SignalEvent(
+                timestamp=now.isoformat(), symbol=symbol,
+                surge_ratio=signal.surge_ratio, price="",
+                accepted=False, reject_reason=f"price fetch failed: {e}",
+            ))
             return False
 
         signal_price = Decimal(str(signal.price))
@@ -314,6 +327,7 @@ class LiveTrader:
                 daily_pnl = await self.client.get_daily_realized_pnl()
                 logger.info("📊 今日已实现盈亏: %s USDT", daily_pnl)
                 if daily_pnl <= -self.config.daily_loss_limit_usdt:
+                    reason = f"daily loss limit ({daily_pnl} ≤ -{self.config.daily_loss_limit_usdt})"
                     self.console.print(
                         f"  [red]🛑 每日亏损限额已达 ({daily_pnl} USDT ≤ -{self.config.daily_loss_limit_usdt})"
                         f" — 停止开新仓[/red]"
@@ -322,6 +336,11 @@ class LiveTrader:
                         "每日亏损限额触发: %s USDT, 限额 %s USDT",
                         daily_pnl, self.config.daily_loss_limit_usdt,
                     )
+                    self.store.save_signal_event(SignalEvent(
+                        timestamp=now.isoformat(), symbol=symbol,
+                        surge_ratio=signal.surge_ratio, price=str(entry_price),
+                        accepted=False, reject_reason=reason,
+                    ))
                     if self.notifier:
                         await self.notifier.notify_daily_loss_limit(
                             str(daily_pnl), str(self.config.daily_loss_limit_usdt)

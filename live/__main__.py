@@ -234,6 +234,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
     elif cmd == "trades":
         load_dotenv()
         from .binance_client import BinanceFuturesClient
+        from .api import _pair_trades
         from rich.console import Console
         from rich.table import Table
         from datetime import datetime, timezone
@@ -243,35 +244,40 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
 
         async def _trades():
             async with BinanceFuturesClient() as client:
-                records = await client.get_income_history(
-                    income_type="REALIZED_PNL", limit=limit,
-                )
-                if not records:
+                raw = await client.get_user_trades(limit=limit * 3)
+                trades = _pair_trades(raw)[:limit]
+                if not trades:
                     console.print("[dim]暂无实盘交易记录[/dim]")
                     return
 
-                table = Table(title=f"📋 实盘交易记录 (最近 {len(records)} 笔)", show_lines=True)
-                table.add_column("时间", style="dim")
+                table = Table(title=f"📋 实盘交易记录 (最近 {len(trades)} 笔)", show_lines=True)
+                table.add_column("平仓时间", style="dim")
                 table.add_column("币种", style="bold")
+                table.add_column("方向", justify="center")
+                table.add_column("入场价", justify="right")
+                table.add_column("出场价", justify="right")
                 table.add_column("盈亏", justify="right")
-                table.add_column("资产", justify="right")
 
                 total_pnl = 0.0
-                for r in records:
-                    pnl = float(r.get("income", 0))
+                for t in trades:
+                    pnl = t["pnl_usdt"]
                     total_pnl += pnl
                     pnl_color = "green" if pnl >= 0 else "red"
-                    ts_ms = int(r.get("time", 0))
-                    ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%m-%d %H:%M") if ts_ms else ""
+                    side_color = "red" if t["side"] == "SHORT" else "green"
+                    exit_ts = datetime.fromtimestamp(
+                        t["exit_time"] / 1000, tz=timezone.utc
+                    ).strftime("%m-%d %H:%M") if t["exit_time"] else ""
                     table.add_row(
-                        ts_str,
-                        r.get("symbol", ""),
-                        f"[{pnl_color}]{pnl:+,.4f}[/{pnl_color}]",
-                        r.get("asset", "USDT"),
+                        exit_ts,
+                        t["symbol"],
+                        f"[{side_color}]{t['side']}[/{side_color}]",
+                        f"{t['entry_price']:.4f}",
+                        f"{t['exit_price']:.4f}",
+                        f"[{pnl_color}]{pnl:+,.2f}[/{pnl_color}]",
                     )
                 console.print(table)
                 total_color = "green" if total_pnl >= 0 else "red"
-                console.print(f"\n  合计盈亏: [{total_color}]{total_pnl:+,.4f}[/{total_color}] USDT")
+                console.print(f"\n  合计盈亏: [{total_color}]{total_pnl:+,.2f}[/{total_color}] USDT")
 
         asyncio.run(_trades())
 

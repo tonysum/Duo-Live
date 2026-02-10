@@ -26,14 +26,14 @@ export interface Position {
 
 export interface LiveTrade {
     symbol: string;
-    side: string;
-    event: string;
-    entry_price: string;
-    exit_price: string;
-    quantity: string;
-    pnl_usdt: string;
-    pnl_pct: string;
-    timestamp: string;
+    side: string;         // LONG / SHORT
+    entry_price: number;
+    exit_price: number;
+    entry_time: string;
+    exit_time: string;
+    quantity: number;
+    pnl_usdt: number;
+    leverage: number;
 }
 
 export interface Signal {
@@ -45,10 +45,6 @@ export interface Signal {
     reject_reason: string;
 }
 
-export interface EquityPoint {
-    timestamp: string;
-    equity: number;
-}
 
 export interface Kline {
     time: number;
@@ -78,11 +74,13 @@ export interface OrderRequest {
     symbol: string;
     side: string;
     order_type: string;
-    margin_usdt: number;
+    margin_usdt?: number;
+    quantity?: number;
     price?: number;
     tp_pct?: number;
     sl_pct?: number;
     leverage?: number;
+    trading_password?: string;
 }
 
 // ── Fetch helpers ──────────────────────────────────────────────────
@@ -115,7 +113,6 @@ export const api = {
     getStatus: () => get<Status>("/api/status"),
     getPositions: () => get<Position[]>("/api/positions"),
     getTrades: (limit = 50) => get<LiveTrade[]>(`/api/trades?limit=${limit}`),
-    getEquity: (limit = 500) => get<EquityPoint[]>(`/api/equity?limit=${limit}`),
     getSignals: (limit = 100) => get<Signal[]>(`/api/signals?limit=${limit}`),
     getConfig: () => get<Config>("/api/config"),
     getKlines: (symbol: string, interval = "5m", limit = 300) =>

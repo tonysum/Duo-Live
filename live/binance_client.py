@@ -395,6 +395,28 @@ class BinanceFuturesClient:
         data = await self._request("GET", "/fapi/v1/income", params, signed=True)
         return data
 
+    async def get_user_trades(
+        self,
+        symbol: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Get account trade list with fill prices. GET /fapi/v1/userTrades
+
+        Returns list of dicts with keys: symbol, id, orderId, side,
+        price, qty, realizedPnl, quoteQty, commission, time, buyer, maker.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+        data = await self._request("GET", "/fapi/v1/userTrades", params, signed=True)
+        return data
+
     async def get_daily_realized_pnl(self) -> Decimal:
         """Get today's total realized P&L (UTC day)."""
         from datetime import datetime, timezone
