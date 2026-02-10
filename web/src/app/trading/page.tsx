@@ -121,40 +121,40 @@ export default function TradingPage() {
     return (
         <div className="flex flex-col -mx-6 -mt-6" style={{ height: "calc(100vh - 0px)" }}>
             {/* Signal bar — horizontal scrollable list */}
-            {signals.length > 0 && (
-                <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-2 flex-shrink-0">
-                    <div className="flex items-center gap-2 overflow-x-auto">
-                        <span className="text-[10px] text-[var(--text-muted)] whitespace-nowrap mr-1">📡 信号</span>
-                        {signals.map((sig, i) => {
-                            const isActive = sig.symbol === symbol;
-                            return (
-                                <button
-                                    key={`${sig.symbol}-${sig.timestamp}-${i}`}
-                                    onClick={() => handleSignalClick(sig)}
-                                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs whitespace-nowrap transition-all
+            <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-2 flex-shrink-0">
+                <div className="flex items-center gap-2 overflow-x-auto">
+                    <span className="text-[10px] text-[var(--text-muted)] whitespace-nowrap mr-1">📡 信号</span>
+                    {signals.length === 0 ? (
+                        <span className="text-[10px] text-[var(--text-muted)]">暂无信号</span>
+                    ) : signals.map((sig, i) => {
+                        const isActive = sig.symbol === symbol;
+                        return (
+                            <button
+                                key={`${sig.symbol}-${sig.timestamp}-${i}`}
+                                onClick={() => handleSignalClick(sig)}
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs whitespace-nowrap transition-all
                                         ${isActive
-                                            ? "bg-[var(--accent-blue)]/20 border border-[var(--accent-blue)]/50 text-[var(--accent-blue)]"
-                                            : "bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent-blue)]/30 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                                        }`}
-                                >
-                                    <span className="font-medium">{sig.symbol.replace("USDT", "")}</span>
-                                    <span className={`font-mono text-[10px] ${sig.accepted ? "text-green-400" : "text-orange-400"}`}>
-                                        {sig.surge_ratio.toFixed(1)}x
-                                    </span>
-                                    {sig.accepted ? (
-                                        <span className="text-[9px] px-1 rounded bg-green-500/20 text-green-400">✓</span>
-                                    ) : (
-                                        <span className="text-[9px] px-1 rounded bg-orange-500/15 text-orange-400" title={sig.reject_reason}>✗</span>
-                                    )}
-                                    <span className="text-[9px] text-[var(--text-muted)]">
-                                        {sig.timestamp?.slice(11, 16)}
-                                    </span>
-                                </button>
-                            );
-                        })}
-                    </div>
+                                        ? "bg-[var(--accent-blue)]/20 border border-[var(--accent-blue)]/50 text-[var(--accent-blue)]"
+                                        : "bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent-blue)]/30 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                                    }`}
+                            >
+                                <span className="font-medium">{sig.symbol.replace("USDT", "")}</span>
+                                <span className={`font-mono text-[10px] ${sig.accepted ? "text-green-400" : "text-orange-400"}`}>
+                                    {sig.surge_ratio.toFixed(1)}x
+                                </span>
+                                {sig.accepted ? (
+                                    <span className="text-[9px] px-1 rounded bg-green-500/20 text-green-400">✓</span>
+                                ) : (
+                                    <span className="text-[9px] px-1 rounded bg-orange-500/15 text-orange-400" title={sig.reject_reason}>✗</span>
+                                )}
+                                <span className="text-[9px] text-[var(--text-muted)]">
+                                    {sig.timestamp?.slice(11, 16)}
+                                </span>
+                            </button>
+                        );
+                    })}
                 </div>
-            )}
+            </div>
 
             {/* Main content: chart + order panel */}
             <div className="flex flex-1 min-h-0">
