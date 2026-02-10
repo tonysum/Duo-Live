@@ -19,6 +19,12 @@ python -m live run
 python -m live run --live
 ```
 
+## 自动启动加重启的脚本
+
+```bash
+./run_forever.sh --live
+```
+
 ## CLI 命令
 
 ### 交易模式

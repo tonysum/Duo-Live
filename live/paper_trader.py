@@ -9,6 +9,8 @@ Runs three concurrent async loops:
 
 import asyncio
 import logging
+import os
+import resource
 import signal
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -145,6 +147,7 @@ class PaperTrader:
                     self._process_signals(),
                     self.monitor.run_forever(),
                     self._snapshot_equity_periodically(),
+                    self._memory_watchdog(),
                 ]
                 if self.live_monitor:
                     tasks.append(self.live_monitor.run_forever())
@@ -154,6 +157,23 @@ class PaperTrader:
                     tasks.append(self.ws_stream.run_forever())
                 if self.tg_bot and self.tg_bot.enabled:
                     tasks.append(self.tg_bot.run_forever())
+
+                # ── FastAPI dashboard backend ──────────────────────
+                try:
+                    import uvicorn
+                    from .api import create_app
+
+                    api_app = create_app(self)
+                    api_config = uvicorn.Config(
+                        api_app, host="0.0.0.0", port=8899,
+                        log_level="warning",
+                    )
+                    api_server = uvicorn.Server(api_config)
+                    tasks.append(api_server.serve())
+                    logger.info("🌐 Dashboard API 启动: http://0.0.0.0:8899/docs")
+                except ImportError:
+                    logger.warning("uvicorn not installed, skipping API server")
+
                 await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 logger.info("PaperTrader cancelled")
@@ -208,8 +228,11 @@ class PaperTrader:
                 # Wait 60 seconds before executing entries
                 await asyncio.sleep(60)
 
-                # Execute all pending signals
-                for s in pending:
+                # Execute pending signals ONE BY ONE (serialize live entries)
+                # Sort by surge ratio descending — strongest signals first
+                pending.sort(key=lambda s: s.surge_ratio, reverse=True)
+                live_pending: set[str] = set()  # track in-flight symbols
+                for i, s in enumerate(pending):
                     if not self._running:
                         break
                     self.console.print(
@@ -217,7 +240,15 @@ class PaperTrader:
                         f"(surge: {s.surge_ratio:.1f}x)"
                     )
                     if self.config.live_mode and self.live_executor:
-                        await self._execute_live_entry(s)
+                        success = await self._execute_live_entry(
+                            s, live_pending=live_pending,
+                        )
+                        if success:
+                            live_pending.add(s.symbol)
+                            # Wait between entries so exchange registers
+                            # the position before the next guard check
+                            if i < len(pending) - 1:
+                                await asyncio.sleep(2)
                     else:
                         await self.executor.execute_entry(s)
 
@@ -226,37 +257,52 @@ class PaperTrader:
             except Exception as e:
                 logger.error("Signal processing error: %s", e, exc_info=True)
 
-    async def _execute_live_entry(self, signal):
-        """Execute a live entry: risk filter → position sizing → real order."""
+    async def _execute_live_entry(self, signal, *, live_pending: set[str] | None = None) -> bool:
+        """Execute a live entry: risk filter → position sizing → real order.
+
+        Returns True if an order was placed successfully, False otherwise.
+        `live_pending` tracks symbols with orders already placed in the current
+        batch, so the guard check can account for them even before the exchange
+        API reflects them.
+        """
         symbol = signal.symbol
         now = utc_now()
+        pending = live_pending or set()
 
         # ── Guard checks ─────────────────────────────────────────
         if self.config.live_mode:
-            # Live mode: check actual exchange positions
+            # Live mode: check actual exchange positions + in-flight orders
             try:
                 all_pos = await self.client.get_position_risk()
                 open_pos = [p for p in all_pos if float(p.position_amt) != 0]
                 open_symbols = {p.symbol for p in open_pos}
 
-                if symbol in open_symbols:
-                    self.console.print(f"  [dim]Skip {symbol}: already in position (exchange)[/dim]")
-                    return
-                if len(open_pos) >= self.config.max_positions:
-                    self.console.print(f"  [dim]Skip {symbol}: max positions reached ({len(open_pos)}/{self.config.max_positions})[/dim]")
-                    return
+                # Combine exchange positions with pending (in-flight) symbols
+                combined_symbols = open_symbols | pending
+                combined_count = len(open_symbols | pending)
+
+                if symbol in combined_symbols:
+                    self.console.print(f"  [dim]Skip {symbol}: already in position (exchange/pending)[/dim]")
+                    return False
+                if combined_count >= self.config.max_positions:
+                    self.console.print(
+                        f"  [dim]Skip {symbol}: max positions reached "
+                        f"({len(open_pos)} exchange + {len(pending)} pending "
+                        f"≥ {self.config.max_positions})[/dim]"
+                    )
+                    return False
             except Exception as e:
                 logger.warning("Failed to check exchange positions: %s", e)
-                return  # fail-closed for safety
+                return False  # fail-closed for safety
         else:
             # Paper mode: check paper store
             existing = self.store.get_position(symbol)
             if existing:
                 self.console.print(f"  [dim]Skip {symbol}: already in position[/dim]")
-                return
+                return False
             if self.store.position_count() >= self.config.max_positions:
                 self.console.print(f"  [dim]Skip {symbol}: max positions reached[/dim]")
-                return
+                return False
 
         # ── Get real-time price ──────────────────────────────────
         try:
@@ -264,7 +310,7 @@ class PaperTrader:
             entry_price = ticker.price
         except Exception as e:
             logger.warning("Failed to get price for %s: %s", symbol, e)
-            return
+            return False
 
         signal_price = Decimal(str(signal.price))
 
@@ -291,7 +337,7 @@ class PaperTrader:
                     self.console.print(
                         f"  [yellow]FILTERED[/yellow] {symbol}: {result.reason}"
                     )
-                    return
+                    return False
             except Exception as e:
                 logger.warning("Risk filter error for %s (fail-open): %s", symbol, e)
 
@@ -313,7 +359,7 @@ class PaperTrader:
                         await self.notifier.notify_daily_loss_limit(
                             str(daily_pnl), str(self.config.daily_loss_limit_usdt)
                         )
-                    return
+                    return False
             except Exception as e:
                 logger.warning("查询每日盈亏失败 (fail-open): %s", e)
 
@@ -335,7 +381,7 @@ class PaperTrader:
                     self.console.print(
                         f"  [dim]Skip {symbol}: 余额不足最低保证金 {MIN_MARGIN} USDT[/dim]"
                     )
-                    return
+                    return False
         quantity = margin * self.config.leverage / entry_price
 
         # ── Place live order ────────────────────────────────────
@@ -385,6 +431,9 @@ class PaperTrader:
                 )
         except Exception as e:
             logger.error("实盘下单失败 %s: %s", symbol, e, exc_info=True)
+            return False
+
+        return True  # order was placed
 
     # ------------------------------------------------------------------
     # Equity Snapshots
@@ -416,6 +465,45 @@ class PaperTrader:
                 logger.error("Equity snapshot error: %s", e)
 
             await asyncio.sleep(3600)  # Every hour
+
+    async def _memory_watchdog(self):
+        """Monitor process memory; warn at 500 MB, auto-exit at 800 MB."""
+        WARN_MB = 500
+        KILL_MB = 800
+        CHECK_INTERVAL = 300  # 5 minutes
+        warned = False
+
+        while self._running:
+            await asyncio.sleep(CHECK_INTERVAL)
+            try:
+                # macOS: ru_maxrss is in bytes
+                rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                rss_mb = rss_bytes / (1024 * 1024)
+
+                if rss_mb >= KILL_MB:
+                    msg = (
+                        f"🚨 内存超限 {rss_mb:.0f} MB ≥ {KILL_MB} MB，"
+                        f"进程即将自动退出重启"
+                    )
+                    logger.critical(msg)
+                    if self.notifier and self.notifier.enabled:
+                        await self.notifier.send(msg)
+                    self.console.print(f"\n[red bold]{msg}[/red bold]")
+                    # Graceful shutdown — let run_forever.sh restart us
+                    os._exit(1)
+
+                elif rss_mb >= WARN_MB and not warned:
+                    msg = (
+                        f"⚠️ 内存偏高 {rss_mb:.0f} MB (阈值 {WARN_MB} MB)，"
+                        f"请关注"
+                    )
+                    logger.warning(msg)
+                    if self.notifier and self.notifier.enabled:
+                        await self.notifier.send(msg)
+                    warned = True
+
+            except Exception as e:
+                logger.warning("Memory watchdog error: %s", e)
 
     async def _daily_pnl_report(self):
         """Send P&L summary to Telegram periodically (every 4 hours) in live mode."""
