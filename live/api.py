@@ -1,6 +1,6 @@
 """FastAPI backend for duo-live trading dashboard.
 
-Runs in-process with PaperTrader, sharing state and Binance client.
+Runs in-process with LiveTrader, sharing state and Binance client.
 All endpoints are prefixed with /api/.
 """
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # ── Pydantic response models ────────────────────────────────────────
 
 class StatusResponse(BaseModel):
-    mode: str  # "live" or "paper"
+    mode: str  # "live"
     total_balance: float
     available_balance: float
     unrealized_pnl: float
@@ -40,21 +40,6 @@ class PositionItem(BaseModel):
     leverage: int = 0
     tp_pct: float = 0
     strength: str = ""
-
-
-class TradeItem(BaseModel):
-    symbol: str
-    side: str
-    entry_price: str
-    exit_price: str
-    pnl: str
-    pnl_pct: str
-    exit_reason: str
-    entry_time: str
-    exit_time: str
-    hold_hours: float
-    tp_pct_used: float
-    strength: str
 
 
 class LiveTradeItem(BaseModel):
@@ -78,13 +63,6 @@ class SignalItem(BaseModel):
     reject_reason: str
 
 
-class EquityPoint(BaseModel):
-    timestamp: str
-    equity: float
-    cash: float
-    open_positions: int
-
-
 class KlineItem(BaseModel):
     time: int  # Unix timestamp in seconds
     open: float
@@ -106,9 +84,7 @@ class OrderRequest(BaseModel):
 
 
 class ConfigResponse(BaseModel):
-    live_mode: bool
     leverage: int
-    position_size_pct: float
     max_positions: int
     max_entries_per_day: int
     stop_loss_pct: float
@@ -127,7 +103,7 @@ def create_app(trader) -> FastAPI:
     """Create FastAPI app with trader reference.
 
     Args:
-        trader: PaperTrader instance (shared, same process).
+        trader: LiveTrader instance (shared, same process).
     """
     app = FastAPI(
         title="Duo-Live Trading API",
@@ -149,154 +125,71 @@ def create_app(trader) -> FastAPI:
     # WebSocket connections for broadcasting
     ws_clients: list[WebSocket] = []
 
-    # ── Helper ───────────────────────────────────────────────────
-
-    def _is_live() -> bool:
-        return bool(trader.live_monitor)
-
     # ── REST Endpoints ───────────────────────────────────────────
 
     @app.get("/api/status", response_model=StatusResponse)
     async def get_status():
         """Account overview: balance, P&L, position count."""
         now = datetime.now(timezone.utc)
-
-        if _is_live():
-            try:
-                bal = await trader.client.get_account_balance()
-                daily_pnl = await trader.client.get_daily_realized_pnl()
-                all_pos = await trader.client.get_position_risk()
-                open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
-
-                return StatusResponse(
-                    mode="live",
-                    total_balance=bal["total_balance"],
-                    available_balance=bal["available_balance"],
-                    unrealized_pnl=bal["unrealized_pnl"],
-                    daily_pnl=float(daily_pnl),
-                    open_positions=open_count,
-                    timestamp=now.isoformat(),
-                )
-            except Exception as e:
-                raise HTTPException(500, detail=str(e))
-        else:
-            # Paper mode
-            store = trader.store
-            positions = store.get_open_positions() if store else []
-            trades = store.get_trades(limit=9999) if store else []
-
-            today = now.strftime("%Y-%m-%d")
-            today_trades = [t for t in trades if t.exit_time and t.exit_time.startswith(today)]
-            today_pnl = sum(float(t.pnl) for t in today_trades)
-
-            capital = float(trader.executor.capital) if trader.executor else 0
+        try:
+            bal = await trader.client.get_account_balance()
+            daily_pnl = await trader.client.get_daily_realized_pnl()
+            all_pos = await trader.client.get_position_risk()
+            open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
             return StatusResponse(
-                mode="paper",
-                total_balance=capital,
-                available_balance=capital,
-                unrealized_pnl=0,
-                daily_pnl=today_pnl,
-                open_positions=len(positions),
+                mode="live",
+                total_balance=bal["total_balance"],
+                available_balance=bal["available_balance"],
+                unrealized_pnl=bal["unrealized_pnl"],
+                daily_pnl=float(daily_pnl),
+                open_positions=open_count,
                 timestamp=now.isoformat(),
             )
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
 
     @app.get("/api/positions", response_model=list[PositionItem])
     async def get_positions():
-        """List open positions."""
-        if _is_live():
-            try:
-                all_pos = await trader.client.get_position_risk()
-                return [
-                    PositionItem(
-                        symbol=p.symbol,
-                        side="LONG" if float(p.position_amt) > 0 else "SHORT",
-                        entry_price=float(p.entry_price),
-                        quantity=abs(float(p.position_amt)),
-                        unrealized_pnl=float(p.unrealized_profit),
-                        leverage=int(p.leverage),
-                    )
-                    for p in all_pos
-                    if float(p.position_amt) != 0
-                ]
-            except Exception as e:
-                raise HTTPException(500, detail=str(e))
-        else:
-            store = trader.store
-            positions = store.get_open_positions() if store else []
+        """List open positions from exchange."""
+        try:
+            all_pos = await trader.client.get_position_risk()
             return [
                 PositionItem(
                     symbol=p.symbol,
-                    side=p.side.upper(),
+                    side="LONG" if float(p.position_amt) > 0 else "SHORT",
                     entry_price=float(p.entry_price),
-                    quantity=float(p.size),
-                    unrealized_pnl=0,
-                    leverage=p.leverage,
-                    tp_pct=p.tp_pct,
-                    strength=p.strength,
+                    quantity=abs(float(p.position_amt)),
+                    unrealized_pnl=float(p.unrealized_profit),
+                    leverage=int(p.leverage),
                 )
-                for p in positions
+                for p in all_pos
+                if float(p.position_amt) != 0
             ]
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
 
-    @app.get("/api/trades")
-    async def get_trades(
-        limit: int = Query(50, ge=1, le=500),
-        mode: str = Query("auto", regex="^(auto|paper|live)$"),
-    ):
-        """Get trade history."""
+    @app.get("/api/trades", response_model=list[LiveTradeItem])
+    async def get_trades(limit: int = Query(50, ge=1, le=500)):
+        """Get live trade history."""
         store = trader.store
         if not store:
             return []
 
-        use_live = (mode == "live") or (mode == "auto" and _is_live())
-
-        if use_live:
-            trades = store.get_live_trades(limit=limit)
-            return [
-                LiveTradeItem(
-                    symbol=t.symbol,
-                    side=t.side,
-                    event=t.event,
-                    entry_price=t.entry_price,
-                    exit_price=t.exit_price,
-                    quantity=t.quantity,
-                    pnl_usdt=t.pnl_usdt,
-                    pnl_pct=t.pnl_pct,
-                    timestamp=t.timestamp,
-                )
-                for t in trades
-            ]
-        else:
-            trades = store.get_trades(limit=limit)
-            return [
-                TradeItem(
-                    symbol=t.symbol,
-                    side=t.side,
-                    entry_price=t.entry_price,
-                    exit_price=t.exit_price,
-                    pnl=t.pnl,
-                    pnl_pct=t.pnl_pct,
-                    exit_reason=t.exit_reason,
-                    entry_time=t.entry_time,
-                    exit_time=t.exit_time,
-                    hold_hours=t.hold_hours,
-                    tp_pct_used=t.tp_pct_used,
-                    strength=t.coin_strength,
-                )
-                for t in trades
-            ]
-
-    @app.get("/api/equity")
-    async def get_equity(limit: int = Query(500, ge=1, le=5000)):
-        """Get equity curve data."""
-        store = trader.store
-        if not store:
-            return []
-
-        rows = store.get_equity_curve(limit=limit)
+        trades = store.get_live_trades(limit=limit)
         return [
-            {"timestamp": r[0], "equity": float(r[1])}
-            for r in rows
+            LiveTradeItem(
+                symbol=t.symbol,
+                side=t.side,
+                event=t.event,
+                entry_price=t.entry_price,
+                exit_price=t.exit_price,
+                quantity=t.quantity,
+                pnl_usdt=t.pnl_usdt,
+                pnl_pct=t.pnl_pct,
+                timestamp=t.timestamp,
+            )
+            for t in trades
         ]
 
     @app.get("/api/signals", response_model=list[SignalItem])
@@ -324,9 +217,7 @@ def create_app(trader) -> FastAPI:
         """Get current trading config."""
         c = trader.config
         return ConfigResponse(
-            live_mode=c.live_mode,
             leverage=c.leverage,
-            position_size_pct=float(c.position_size_pct),
             max_positions=c.max_positions,
             max_entries_per_day=c.max_entries_per_day,
             stop_loss_pct=c.stop_loss_pct,
@@ -409,9 +300,6 @@ def create_app(trader) -> FastAPI:
     @app.post("/api/order")
     async def place_order(req: OrderRequest):
         """Place a manual order with optional TP/SL."""
-        if not _is_live():
-            raise HTTPException(400, detail="Manual orders only available in live mode")
-
         try:
             # Set leverage
             await trader.client.set_leverage(req.symbol.upper(), req.leverage)
@@ -464,7 +352,7 @@ def create_app(trader) -> FastAPI:
                 "price": str(price),
             }
 
-            # Place TP/SL if requested and using live monitor
+            # Place TP/SL if requested
             if (req.tp_pct or req.sl_pct) and trader.live_monitor:
                 tp_sl = {}
                 if req.tp_pct:
@@ -492,9 +380,6 @@ def create_app(trader) -> FastAPI:
     @app.post("/api/close/{symbol}")
     async def close_position(symbol: str):
         """Force close a position."""
-        if not _is_live():
-            raise HTTPException(400, detail="Close only available in live mode")
-
         sym = symbol.upper()
 
         # Try live monitor first
@@ -539,43 +424,25 @@ def create_app(trader) -> FastAPI:
             while True:
                 # Send periodic status updates
                 try:
-                    if _is_live():
-                        bal = await trader.client.get_account_balance()
-                        all_pos = await trader.client.get_position_risk()
-                        open_pos = [p for p in all_pos if float(p.position_amt) != 0]
+                    bal = await trader.client.get_account_balance()
+                    all_pos = await trader.client.get_position_risk()
+                    open_pos = [p for p in all_pos if float(p.position_amt) != 0]
 
-                        data = {
-                            "type": "status",
-                            "total_balance": bal["total_balance"],
-                            "unrealized_pnl": bal["unrealized_pnl"],
-                            "positions": [
-                                {
-                                    "symbol": p.symbol,
-                                    "side": "LONG" if float(p.position_amt) > 0 else "SHORT",
-                                    "unrealized_pnl": float(p.unrealized_profit),
-                                    "entry_price": float(p.entry_price),
-                                    "quantity": abs(float(p.position_amt)),
-                                }
-                                for p in open_pos
-                            ],
-                        }
-                    else:
-                        positions = trader.store.get_open_positions() if trader.store else []
-                        data = {
-                            "type": "status",
-                            "total_balance": float(trader.executor.capital) if trader.executor else 0,
-                            "unrealized_pnl": 0,
-                            "positions": [
-                                {
-                                    "symbol": p.symbol,
-                                    "side": p.side.upper(),
-                                    "unrealized_pnl": 0,
-                                    "entry_price": float(p.entry_price),
-                                    "quantity": float(p.size),
-                                }
-                                for p in positions
-                            ],
-                        }
+                    data = {
+                        "type": "status",
+                        "total_balance": bal["total_balance"],
+                        "unrealized_pnl": bal["unrealized_pnl"],
+                        "positions": [
+                            {
+                                "symbol": p.symbol,
+                                "side": "LONG" if float(p.position_amt) > 0 else "SHORT",
+                                "unrealized_pnl": float(p.unrealized_profit),
+                                "entry_price": float(p.entry_price),
+                                "quantity": abs(float(p.position_amt)),
+                            }
+                            for p in open_pos
+                        ],
+                    }
 
                     await ws.send_json(data)
                 except Exception as e:

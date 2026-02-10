@@ -1,31 +1,21 @@
 """Live trading configuration.
 
-Mirrors SurgeShortEngineConfig V2 parameters for consistency between
-backtest and live trading. Adds real-time-specific settings.
+Strategy parameters for the Surge Short V2 live trading system.
 """
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
 
 
 @dataclass
 class LiveTradingConfig:
-    """Unified configuration for paper / live trading."""
+    """Configuration for live trading."""
 
     # ── Capital & Leverage ──────────────────────────────────────────────
-    initial_capital: Decimal = Decimal("10000")
-    leverage: int = 3 #回测时是4，实盘时是3
-    position_size_pct: Decimal = Decimal("0.015")#回测时是0.5，实盘时是0.015
-    max_positions: int = 6 #回测时是10，实盘时是6
-    max_entries_per_day: int = 4 #回测时是20，实盘时是4
-    max_position_value_ratio: float = 0.5 
-    min_capital_ratio: float = 0.1
-    commission_rate: Decimal = Decimal("0.0004")
-
-    # ── Execution Mode ──────────────────────────────────────────────────
-    live_mode: bool = False  # True = real orders, False = paper trading
-    live_fixed_margin_usdt: Decimal = Decimal("5")  # 固定保证金 (0=按比例)
+    leverage: int = 3
+    max_positions: int = 6
+    max_entries_per_day: int = 4
+    live_fixed_margin_usdt: Decimal = Decimal("5")  # 固定保证金 (USDT/笔)
     daily_loss_limit_usdt: Decimal = Decimal("50")   # 每日亏损限额 (0=不限)
 
     # ── V2 Strategy Parameters ──────────────────────────────────────────
@@ -67,4 +57,4 @@ class LiveTradingConfig:
     monitor_interval_seconds: int = 30
 
     # ── Persistence ────────────────────────────────────────────────────
-    paper_db_path: str = "data/paper_trades.db"
+    db_path: str = "data/trades.db"

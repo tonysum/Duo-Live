@@ -51,7 +51,7 @@ class TrackedPosition:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     closed: bool = False
 
-    # Dynamic TP (mirrors paper position_monitor V2)
+    # Dynamic TP (V2 strength evaluation)
     current_tp_pct: float = 33.0  # current take-profit percentage
     evaluated_2h: bool = False
     evaluated_12h: bool = False
@@ -72,7 +72,7 @@ class LivePositionMonitor:
         config: Optional[LiveTradingConfig] = None,
         poll_interval: int = 30,
         notifier=None,  # TelegramNotifier (optional)
-        store=None,     # PaperStore (optional, for live trade recording)
+        store=None,     # TradeStore (optional, for live trade recording)
     ):
         self.client = client
         self.executor = executor
@@ -395,13 +395,13 @@ class LivePositionMonitor:
             except Exception:
                 pass
     # ------------------------------------------------------------------
-    # Dynamic TP (V2 — mirrors paper position_monitor._update_dynamic_tp)
+    # Dynamic TP (V2 — strength evaluation at 2h / 12h checkpoints)
     # ------------------------------------------------------------------
 
     async def _update_dynamic_tp(self, pos: TrackedPosition, now: datetime):
         """Evaluate coin strength at 2h/12h and adjust TP if needed.
 
-        Identical logic to paper position_monitor._update_dynamic_tp_v2:
+        V2 dynamic TP evaluation:
           - 2h:  strong → 33%, medium → 21%
           - 12h: strong → 33%, weak → 10%
         """
@@ -531,7 +531,7 @@ class LivePositionMonitor:
     ) -> float | None:
         """Compute fraction of 5m candles whose close dropped > threshold from entry.
 
-        Identical to paper position_monitor._calc_5m_drop_ratio.
+        Computes the fraction of 5m candles that dropped beyond threshold.
         """
         try:
             start_ms = int(start.timestamp() * 1000)
@@ -561,7 +561,7 @@ class LivePositionMonitor:
         if not self.store:
             return
         try:
-            from .paper_store import LiveTrade
+            from .store import LiveTrade
             trade = LiveTrade(
                 symbol=pos.symbol,
                 side=pos.side,

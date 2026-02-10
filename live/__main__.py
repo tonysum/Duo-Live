@@ -1,22 +1,19 @@
 """duo-live entry point.
 
 Usage:
-    python -m live run                                  # 模拟模式启动
-    python -m live run --live [--margin N] [--loss-limit N]  # 实盘模式
-    python -m live status                               # 查看状态 & 资金
-    python -m live trades                               # 查看历史成交
-    python -m live signals                              # 查看信号历史
-    python -m live live-trades [N]                       # 查看实盘交易记录
-    python -m live order <symbol> <price> [qty]          # 手动下单
+    python -m live run [--margin N] [--loss-limit N]   # 启动实盘交易
+    python -m live status                              # 查看账户状态
+    python -m live live-trades [N]                     # 查看实盘交易记录
+    python -m live order <symbol> <price> [qty]        # 手动下单
         [--long] [--tp N] [--sl N] [--leverage N] [--margin N]
-    python -m live orders [symbol]                      # 查看挂单
-    python -m live positions [symbol]                   # 查看持仓
-    python -m live close <symbol>                       # 市价平仓
-    python -m live tp <symbol> <price>                  # 手动挂止盈
-    python -m live sl <symbol> <price>                  # 手动挂止损
-    python -m live cancel <symbol> <id>                 # 取消单个订单
-    python -m live cancel-all <symbol>                  # 取消全部订单
-    python -m live test-notify [message]                # 测试 Telegram 通知
+    python -m live orders [symbol]                     # 查看挂单
+    python -m live positions [symbol]                  # 查看持仓
+    python -m live close <symbol>                      # 市价平仓
+    python -m live tp <symbol> <price>                 # 手动挂止盈
+    python -m live sl <symbol> <price>                 # 手动挂止损
+    python -m live cancel <symbol> <id>                # 取消单个订单
+    python -m live cancel-all <symbol>                 # 取消全部订单
+    python -m live test-notify [message]               # 测试 Telegram 通知
 """
 
 import asyncio
@@ -27,7 +24,7 @@ from decimal import Decimal
 from dotenv import load_dotenv
 
 from .live_config import LiveTradingConfig
-from .paper_trader import PaperTrader, print_status, print_trades, print_signals
+from .trader import LiveTrader
 
 
 def _parse_flags(args: list[str]) -> tuple[list[str], dict[str, str]]:
@@ -110,7 +107,7 @@ def _run_order(symbol: str, price: str, quantity: str | None = None,
 
     # Start monitor to wait for entry fill and auto-place TP/SL
     if result.get("entry_order") and result.get("deferred_tp_sl"):
-        print("\n🔍 监控入场单状态... (Ctrl+C 退出监控，TP/SL 需手动设置)")
+        print("\n🔍 等待入场成交并挂出 TP/SL... (Ctrl+C 退出，TP/SL 需手动设置)")
 
         async def _monitor():
             from .live_position_monitor import LivePositionMonitor
@@ -124,17 +121,25 @@ def _run_order(symbol: str, price: str, quantity: str | None = None,
                     quantity=result["deferred_tp_sl"]["quantity"],
                     deferred_tp_sl=result["deferred_tp_sl"],
                 )
+                # Poll until TP/SL placed or position closed/canceled
                 while mon.tracked_count > 0:
                     await mon._check_all()
-                    if mon.tracked_count == 0:
+                    pos = mon._positions.get(result["entry_order"].symbol)
+                    if not pos:
+                        break
+                    if pos.closed:
+                        print("\n⚠️ 入场单已取消/过期")
+                        break
+                    if pos.tp_sl_placed:
+                        print(f"\n✅ TP/SL 已挂出 (tp={pos.tp_algo_id}, sl={pos.sl_algo_id})")
+                        print("   可安全退出，TP/SL 由交易所管理")
                         break
                     await asyncio.sleep(10)
-                print("\n✅ 监控结束")
 
         try:
             asyncio.run(_monitor())
         except KeyboardInterrupt:
-            print("\n⏹️ 监控已停止 (入场单仍在挂单中)")
+            print("\n⏹️ 监控已停止 (入场单仍在挂单中，TP/SL 需手动设置)")
 
 
 def main():
@@ -192,52 +197,127 @@ def main():
 def _dispatch(cmd: str, config: LiveTradingConfig):
     """Route CLI sub-commands."""
     if cmd == "status":
-        print_status(config)
+        load_dotenv()
+        from .binance_client import BinanceFuturesClient
+        from rich.console import Console
+        from rich.panel import Panel
+
+        console = Console()
+
+        async def _status():
+            async with BinanceFuturesClient() as client:
+                bal = await client.get_account_balance()
+                daily_pnl = await client.get_daily_realized_pnl()
+                all_pos = await client.get_position_risk()
+                open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
+
+                total = bal["total_balance"]
+                avail = bal["available_balance"]
+                unreal = bal["unrealized_pnl"]
+
+                pnl_color = "green" if daily_pnl >= 0 else "red"
+                unreal_color = "green" if unreal >= 0 else "red"
+
+                console.print()
+                console.print(Panel.fit(
+                    f"💰 总余额:     [bold]{total:,.2f}[/bold] USDT\n"
+                    f"💵 可用余额:   [bold]{avail:,.2f}[/bold] USDT\n"
+                    f"📈 今日盈亏:   [{pnl_color}]{daily_pnl:+,.2f}[/{pnl_color}] USDT\n"
+                    f"📊 未实现盈亏: [{unreal_color}]{unreal:+,.2f}[/{unreal_color}] USDT\n"
+                    f"📌 持仓数:     {open_count}",
+                    title="🔴 实盘账户状态",
+                ))
+                console.print()
+
+        asyncio.run(_status())
 
     elif cmd == "trades":
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-        print_trades(config, limit=limit)
-
-    elif cmd == "signals":
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-        print_signals(config, limit=limit)
-
-    elif cmd == "live-trades":
+        load_dotenv()
+        from .binance_client import BinanceFuturesClient
         from rich.console import Console
         from rich.table import Table
-        from .paper_store import PaperStore
+        from datetime import datetime, timezone
+
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-        store = PaperStore(config.paper_db_path)
-        trades = store.get_live_trades(limit=limit)
+        console = Console()
+
+        async def _trades():
+            async with BinanceFuturesClient() as client:
+                records = await client.get_income_history(
+                    income_type="REALIZED_PNL", limit=limit,
+                )
+                if not records:
+                    console.print("[dim]暂无实盘交易记录[/dim]")
+                    return
+
+                table = Table(title=f"📋 实盘交易记录 (最近 {len(records)} 笔)", show_lines=True)
+                table.add_column("时间", style="dim")
+                table.add_column("币种", style="bold")
+                table.add_column("盈亏", justify="right")
+                table.add_column("资产", justify="right")
+
+                total_pnl = 0.0
+                for r in records:
+                    pnl = float(r.get("income", 0))
+                    total_pnl += pnl
+                    pnl_color = "green" if pnl >= 0 else "red"
+                    ts_ms = int(r.get("time", 0))
+                    ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%m-%d %H:%M") if ts_ms else ""
+                    table.add_row(
+                        ts_str,
+                        r.get("symbol", ""),
+                        f"[{pnl_color}]{pnl:+,.4f}[/{pnl_color}]",
+                        r.get("asset", "USDT"),
+                    )
+                console.print(table)
+                total_color = "green" if total_pnl >= 0 else "red"
+                console.print(f"\n  合计盈亏: [{total_color}]{total_pnl:+,.4f}[/{total_color}] USDT")
+
+        asyncio.run(_trades())
+
+    elif cmd == "signals":
+        from rich.console import Console
+        from rich.table import Table
+        from .store import TradeStore
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+        store = TradeStore(config.db_path)
+        events = store.get_signal_events(limit=limit)
         store.close()
         console = Console()
-        if not trades:
-            console.print("[dim]暂无实盘交易记录[/dim]")
-        else:
-            table = Table(title=f"📋 实盘交易记录 (最近 {len(trades)} 笔)", show_lines=True)
-            table.add_column("时间", style="dim")
-            table.add_column("币种", style="bold")
-            table.add_column("方向")
-            table.add_column("事件")
-            table.add_column("开仓价", justify="right")
-            table.add_column("数量", justify="right")
-            table.add_column("保证金", justify="right")
-            table.add_column("Order/Algo ID", style="dim")
-            event_colors = {"entry": "cyan", "tp": "green", "sl": "red", "timeout": "yellow", "close": "magenta"}
-            for t in trades:
-                color = event_colors.get(t.event, "white")
-                dir_color = "green" if t.side == "LONG" else "red"
+        if events:
+            table = Table(title=f"📡 Signal History (last {len(events)})")
+            table.add_column("Time", style="dim")
+            table.add_column("Symbol", style="cyan")
+            table.add_column("Surge", justify="right", style="red")
+            table.add_column("Price", justify="right")
+            table.add_column("Result")
+            table.add_column("Reason", style="dim")
+
+            accepted = 0
+            for e in events:
+                if e.accepted:
+                    accepted += 1
+                    result = "[green]✅ ENTRY[/green]"
+                    reason = ""
+                else:
+                    result = "[yellow]❌ FILTERED[/yellow]"
+                    reason = e.reject_reason or ""
                 table.add_row(
-                    t.timestamp[:19] if t.timestamp else "",
-                    t.symbol,
-                    f"[{dir_color}]{t.side}[/{dir_color}]",
-                    f"[{color}]{t.event.upper()}[/{color}]",
-                    t.entry_price,
-                    t.quantity,
-                    f"{t.margin_usdt}U" if t.margin_usdt else "",
-                    t.order_id or t.algo_id or "",
+                    e.timestamp[:19],
+                    e.symbol,
+                    f"{e.surge_ratio:.1f}x",
+                    e.price,
+                    result,
+                    reason,
                 )
             console.print(table)
+            console.print(
+                f"\n  Total: {len(events)}  |  "
+                f"Accepted: {accepted}  |  "
+                f"Rejected: {len(events) - accepted}"
+            )
+        else:
+            console.print("[dim]No signals detected yet.[/dim]")
 
     elif cmd == "order":
         # Two modes:
@@ -471,36 +551,34 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
             print("❌ 发送失败，请检查 token 和 chat_id")
 
     elif cmd == "run":
-        # python -m live run [--live] [--margin 50] [--loss-limit 100]
+        # python -m live run [--margin 50] [--loss-limit 100]
         _, run_flags = _parse_flags(sys.argv[2:])
-        if "live" in run_flags:
-            load_dotenv()
-            config.live_mode = True
-            if "margin" in run_flags:
-                config.live_fixed_margin_usdt = Decimal(run_flags["margin"])
-            if "loss-limit" in run_flags:
-                config.daily_loss_limit_usdt = Decimal(run_flags["loss-limit"])
+        load_dotenv()
+        if "margin" in run_flags:
+            config.live_fixed_margin_usdt = Decimal(run_flags["margin"])
+        if "loss-limit" in run_flags:
+            config.daily_loss_limit_usdt = Decimal(run_flags["loss-limit"])
 
-            # ── Startup confirmation ──────────────────────────────
-            print()
-            print("=" * 50)
-            print("  ⚠️  实盘模式 — 将使用真实资金交易")
-            print("=" * 50)
-            print(f"  保证金:     {config.live_fixed_margin_usdt} USDT / 笔")
-            print(f"  杠杆:       {config.leverage}x")
-            print(f"  每日亏损限额: {config.daily_loss_limit_usdt} USDT")
-            print(f"  止盈:       {config.strong_tp_pct}%")
-            print(f"  止损:       {config.stop_loss_pct}%")
-            print(f"  最大持仓时间: {config.max_hold_hours}h")
-            print(f"  最大持仓数:  {config.max_positions}")
-            print()
-            confirm = input("  输入 yes 确认启动: ").strip().lower()
-            if confirm != "yes":
-                print("  ❌ 已取消")
-                sys.exit(0)
-            print()
+        # ── Startup confirmation ──────────────────────────────
+        print()
+        print("=" * 50)
+        print("  ⚠️  实盘模式 — 将使用真实资金交易")
+        print("=" * 50)
+        print(f"  保证金:     {config.live_fixed_margin_usdt} USDT / 笔")
+        print(f"  杠杆:       {config.leverage}x")
+        print(f"  每日亏损限额: {config.daily_loss_limit_usdt} USDT")
+        print(f"  止盈:       {config.strong_tp_pct}%")
+        print(f"  止损:       {config.stop_loss_pct}%")
+        print(f"  最大持仓时间: {config.max_hold_hours}h")
+        print(f"  最大持仓数:  {config.max_positions}")
+        print()
+        confirm = input("  输入 yes 确认启动: ").strip().lower()
+        if confirm != "yes":
+            print("  ❌ 已取消")
+            sys.exit(0)
+        print()
 
-        trader = PaperTrader(config=config)
+        trader = LiveTrader(config=config)
         asyncio.run(trader.start())
 
     else:
@@ -509,14 +587,12 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("Usage: python -m live <command> [options]")
         print()
         print("Commands:")
-        print("  run                     启动交易 (默认模拟模式)")
-        print("    --live                实盘模式")
-        print("    --margin N            固定保证金 (USDT, 默认100, 0=按比例)")
-        print("    --loss-limit N        每日亏损限额 (USDT, 默认200, 0=不限)")
-        print("  status                  查看状态 & 资金")
-        print("  trades                  查看历史成交")
-        print("  signals                 查看信号历史")
-        print("  live-trades [N]         查看实盘交易记录 (默认50条)")
+        print("  run                     启动实盘交易")
+        print("    --margin N            固定保证金 (USDT, 默认5)")
+        print("    --loss-limit N        每日亏损限额 (USDT, 默认50)")
+        print("  status                  查看账户状态")
+        print("  trades [N]              查看实盘交易记录 (默认50条)")
+        print("  signals [N]             查看信号历史 (默认50条)")
         print("  order <sym> <price>     手动下单")
         print("    [qty] [--long] [--tp N] [--sl N] [--leverage N] [--margin N]")
         print("  orders [symbol]         查看挂单")
@@ -532,4 +608,3 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
 
 if __name__ == "__main__":
     main()
-

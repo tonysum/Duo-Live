@@ -35,11 +35,11 @@ class TelegramBot:
         self,
         bot_token: str,
         chat_id: str,
-        paper_trader=None,  # PaperTrader reference (set after init)
+        trader=None,  # LiveTrader reference
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self.trader = paper_trader
+        self.trader = trader
         self._base_url = _TG_API.format(token=bot_token)
         self._offset = 0  # getUpdates offset
         self._running = False
@@ -143,21 +143,13 @@ class TelegramBot:
     # Command Implementations
     # ------------------------------------------------------------------
 
-    @property
-    def _is_live(self) -> bool:
-        return bool(self.trader and self.trader.live_monitor)
-
-    @property
-    def _mode_label(self) -> str:
-        return "🔴 实盘" if self._is_live else "📝 模拟盘"
-
     async def _cmd_help(self, args: list[str]) -> str:
         return (
-            f"🤖 <b>可用命令</b>  ({self._mode_label})\n\n"
+            "🤖 <b>可用命令</b>  (🔴 实盘)\n\n"
             "/status — 账户概览\n"
             "/positions — 持仓详情\n"
             "/trades — 最近交易\n"
-            "/close &lt;SYMBOL&gt; — 强制平仓 (实盘)\n"
+            "/close &lt;SYMBOL&gt; — 强制平仓\n"
             "/help — 显示帮助"
         )
 
@@ -167,47 +159,28 @@ class TelegramBot:
             return "⚠️ 交易系统未连接"
 
         try:
-            lines = [f"📊 <b>账户状态</b>  ({self._mode_label})\n"]
+            lines = ["📊 <b>账户状态</b>  (🔴 实盘)\n"]
 
-            if self._is_live:
-                client = self.trader.client
-                bal = await client.get_account_balance()
-                daily_pnl = await client.get_daily_realized_pnl()
-                all_pos = await client.get_position_risk()
-                open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
+            client = self.trader.client
+            bal = await client.get_account_balance()
+            daily_pnl = await client.get_daily_realized_pnl()
+            all_pos = await client.get_position_risk()
+            open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
-                total = bal["total_balance"]
-                avail = bal["available_balance"]
-                unreal = bal["unrealized_pnl"]
+            total = bal["total_balance"]
+            avail = bal["available_balance"]
+            unreal = bal["unrealized_pnl"]
 
-                pnl_emoji = "📈" if daily_pnl >= 0 else "📉"
-                unreal_emoji = "🟢" if unreal >= 0 else "🔴"
+            pnl_emoji = "📈" if daily_pnl >= 0 else "📉"
+            unreal_emoji = "🟢" if unreal >= 0 else "🔴"
 
-                lines.append(
-                    f"💰 总余额: <code>{total:,.2f}</code> USDT\n"
-                    f"💵 可用余额: <code>{avail:,.2f}</code> USDT\n"
-                    f"{pnl_emoji} 今日盈亏: <code>{daily_pnl:+,.2f}</code> USDT\n"
-                    f"{unreal_emoji} 未实现盈亏: <code>{unreal:+,.2f}</code> USDT\n"
-                    f"📌 持仓数: {open_count}"
-                )
-            else:
-                # Paper mode — show paper stats
-                store = self.trader.store
-                positions = store.get_open_positions() if store else []
-                trades = store.get_trades(limit=9999) if store else []
-
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                today_trades = [t for t in trades if t.exit_time and t.exit_time.startswith(today)]
-                today_pnl = sum(float(t.pnl) for t in today_trades)
-
-                pnl_emoji = "📈" if today_pnl >= 0 else "📉"
-
-                lines.append(
-                    f"📌 模拟持仓: {len(positions)}\n"
-                    f"📊 总交易数: {len(trades)}\n"
-                    f"{pnl_emoji} 今日盈亏: <code>{today_pnl:+,.2f}</code> USDT\n"
-                    f"📜 今日成交: {len(today_trades)}"
-                )
+            lines.append(
+                f"💰 总余额: <code>{total:,.2f}</code> USDT\n"
+                f"💵 可用余额: <code>{avail:,.2f}</code> USDT\n"
+                f"{pnl_emoji} 今日盈亏: <code>{daily_pnl:+,.2f}</code> USDT\n"
+                f"{unreal_emoji} 未实现盈亏: <code>{unreal:+,.2f}</code> USDT\n"
+                f"📌 持仓数: {open_count}"
+            )
 
             lines.append(f"\n⏱️ {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
             return "\n".join(lines)
@@ -220,44 +193,26 @@ class TelegramBot:
             return "⚠️ 交易系统未连接"
 
         try:
-            if self._is_live:
-                all_pos = await self.trader.client.get_position_risk()
-                open_pos = [p for p in all_pos if float(p.position_amt) != 0]
+            all_pos = await self.trader.client.get_position_risk()
+            open_pos = [p for p in all_pos if float(p.position_amt) != 0]
 
-                if not open_pos:
-                    return f"📭 当前无持仓  ({self._mode_label})"
+            if not open_pos:
+                return "📭 当前无持仓  (🔴 实盘)"
 
-                lines = [f"📋 <b>当前持仓</b>  ({self._mode_label})\n"]
-                for p in open_pos:
-                    amt = float(p.position_amt)
-                    side = "LONG 📈" if amt > 0 else "SHORT 📉"
-                    entry = float(p.entry_price)
-                    unreal = float(p.unrealized_profit)
-                    pnl_emoji = "🟢" if unreal >= 0 else "🔴"
+            lines = ["📋 <b>当前持仓</b>  (🔴 实盘)\n"]
+            for p in open_pos:
+                amt = float(p.position_amt)
+                side = "LONG 📈" if amt > 0 else "SHORT 📉"
+                entry = float(p.entry_price)
+                unreal = float(p.unrealized_profit)
+                pnl_emoji = "🟢" if unreal >= 0 else "🔴"
 
-                    lines.append(
-                        f"<b>{p.symbol}</b> {side}\n"
-                        f"  入场: <code>{entry:,.4f}</code>\n"
-                        f"  数量: <code>{abs(amt)}</code>\n"
-                        f"  {pnl_emoji} 盈亏: <code>{unreal:+,.2f}</code> USDT\n"
-                    )
-            else:
-                # Paper mode
-                store = self.trader.store
-                positions = store.get_open_positions() if store else []
-
-                if not positions:
-                    return f"📭 当前无模拟持仓  ({self._mode_label})"
-
-                lines = [f"📋 <b>模拟持仓</b>  ({self._mode_label})\n"]
-                for p in positions:
-                    side_emoji = "📉" if p.side == "short" else "📈"
-                    lines.append(
-                        f"<b>{p.symbol}</b> {p.side.upper()} {side_emoji}\n"
-                        f"  入场: <code>{p.entry_price}</code>\n"
-                        f"  数量: <code>{p.size}</code>\n"
-                        f"  TP: {p.tp_pct}% | 强弱: {p.strength}\n"
-                    )
+                lines.append(
+                    f"<b>{p.symbol}</b> {side}\n"
+                    f"  入场: <code>{entry:,.4f}</code>\n"
+                    f"  数量: <code>{abs(amt)}</code>\n"
+                    f"  {pnl_emoji} 盈亏: <code>{unreal:+,.2f}</code> USDT\n"
+                )
 
             return "\n".join(lines)
         except Exception as e:
@@ -269,37 +224,22 @@ class TelegramBot:
             return "⚠️ 交易记录不可用"
 
         try:
-            if self._is_live:
-                trades = self.trader.store.get_live_trades(limit=10)
-                label = "实盘交易"
-            else:
-                trades = self.trader.store.get_trades(limit=10)
-                label = "模拟交易"
+            trades = self.trader.store.get_live_trades(limit=10)
 
             if not trades:
-                return f"📭 暂无{label}记录"
+                return "📭 暂无实盘交易记录"
 
-            lines = [f"📜 <b>最近{label}</b>  ({self._mode_label})\n"]
+            lines = ["📜 <b>最近实盘交易</b>  (🔴 实盘)\n"]
 
-            if self._is_live:
-                for t in trades:
-                    event_emoji = {
-                        "entry": "🔹", "tp": "🎯", "sl": "🛑",
-                        "timeout": "⏰",
-                    }.get(t.event, "•")
-                    lines.append(
-                        f"{event_emoji} {t.symbol} {t.side} — {t.event}\n"
-                        f"  {t.timestamp or '?'}\n"
-                    )
-            else:
-                for t in trades:
-                    pnl = float(t.pnl)
-                    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                    lines.append(
-                        f"{pnl_emoji} {t.symbol} {t.side}\n"
-                        f"  {t.exit_reason} | PnL: <code>{pnl:+,.2f}</code>\n"
-                        f"  {t.exit_time or '?'}\n"
-                    )
+            for t in trades:
+                event_emoji = {
+                    "entry": "🔹", "tp": "🎯", "sl": "🛑",
+                    "timeout": "⏰",
+                }.get(t.event, "•")
+                lines.append(
+                    f"{event_emoji} {t.symbol} {t.side} — {t.event}\n"
+                    f"  {t.timestamp or '?'}\n"
+                )
 
             return "\n".join(lines)
         except Exception as e:
@@ -307,8 +247,6 @@ class TelegramBot:
 
     async def _cmd_close(self, args: list[str]) -> str:
         """Force close a position: /close BTCUSDT"""
-        if not self._is_live:
-            return "⚠️ 平仓仅限实盘模式\n模拟盘持仓会按策略自动退出"
 
         if not args:
             return "⚠️ 用法: /close BTCUSDT"

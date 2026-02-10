@@ -23,20 +23,6 @@ export interface Position {
     strength: string;
 }
 
-export interface PaperTrade {
-    symbol: string;
-    side: string;
-    entry_price: string;
-    exit_price: string;
-    pnl: string;
-    pnl_pct: string;
-    exit_reason: string;
-    entry_time: string;
-    exit_time: string;
-    hold_hours: number;
-    tp_pct_used: number;
-    strength: string;
-}
 
 export interface LiveTrade {
     symbol: string;
@@ -74,9 +60,8 @@ export interface Kline {
 }
 
 export interface Config {
-    live_mode: boolean;
     leverage: number;
-    position_size_pct: number;
+
     max_positions: number;
     max_entries_per_day: number;
     stop_loss_pct: number;
@@ -129,8 +114,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 export const api = {
     getStatus: () => get<Status>("/api/status"),
     getPositions: () => get<Position[]>("/api/positions"),
-    getTrades: (limit = 50) => get<PaperTrade[]>(`/api/trades?limit=${limit}`),
-    getLiveTrades: (limit = 50) => get<LiveTrade[]>(`/api/trades?limit=${limit}&mode=live`),
+    getTrades: (limit = 50) => get<LiveTrade[]>(`/api/trades?limit=${limit}`),
     getEquity: (limit = 500) => get<EquityPoint[]>(`/api/equity?limit=${limit}`),
     getSignals: (limit = 100) => get<Signal[]>(`/api/signals?limit=${limit}`),
     getConfig: () => get<Config>("/api/config"),
