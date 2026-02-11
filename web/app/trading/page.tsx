@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useMemo } from "react"
 import { api, Kline, Position, Signal, OrderRequest } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
@@ -13,6 +13,8 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
 
 const TradeChart = dynamic(() => import("@/components/kokonutui/trade-chart"), {
@@ -50,6 +52,10 @@ export default function TradingPage() {
   const [password, setPassword] = useState("")
   const [pwError, setPwError] = useState("")
 
+  // Signal pagination
+  const SIGNALS_PER_PAGE = 12
+  const [signalPage, setSignalPage] = useState(0)
+
   const loadChart = useCallback(async () => {
     setLoading(true)
     try {
@@ -77,7 +83,17 @@ export default function TradingPage() {
   // Load signals
   useEffect(() => {
     const sortAndDedup = (raw: Signal[]) => {
-      const sorted = [...raw].sort((a, b) => {
+      // Filter to last 2 days
+      const now = new Date()
+      const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
+
+      const recent = raw.filter(
+        (s) => s.timestamp.slice(0, 10) >= twoDaysAgo
+      )
+
+      const sorted = [...recent].sort((a, b) => {
         const dayA = a.timestamp.slice(0, 10)
         const dayB = b.timestamp.slice(0, 10)
         if (dayA !== dayB) return dayB.localeCompare(dayA)
@@ -92,17 +108,28 @@ export default function TradingPage() {
       })
     }
     api
-      .getSignals(50)
+      .getSignals(200)
       .then((s) => setSignals(sortAndDedup(s)))
-      .catch(() => {})
+      .catch(() => { })
     const iv = setInterval(() => {
       api
-        .getSignals(50)
+        .getSignals(200)
         .then((s) => setSignals(sortAndDedup(s)))
-        .catch(() => {})
+        .catch(() => { })
     }, 30000)
     return () => clearInterval(iv)
   }, [])
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(signals.length / SIGNALS_PER_PAGE))
+  const pagedSignals = useMemo(
+    () =>
+      signals.slice(
+        signalPage * SIGNALS_PER_PAGE,
+        (signalPage + 1) * SIGNALS_PER_PAGE
+      ),
+    [signals, signalPage]
+  )
 
   const handleSearch = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") setSymbol(searchInput.toUpperCase())
@@ -163,23 +190,47 @@ export default function TradingPage() {
           Manual Trade
         </h1>
 
-        {/* Signal ribbon */}
+        {/* Signal grid with pagination */}
         <div
           className={cn(
             "bg-white dark:bg-zinc-900/70",
             "border border-zinc-100 dark:border-zinc-800",
-            "rounded-xl p-3",
-            "overflow-x-auto"
+            "rounded-xl p-3"
           )}
         >
-          <div className="flex items-center gap-2 min-w-max">
-            <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400 shrink-0">
-              Signals
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+              Signals ({signals.length})
             </span>
-            {signals.length === 0 ? (
-              <span className="text-[11px] text-zinc-400">No signals</span>
-            ) : (
-              signals.map((sig, i) => {
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSignalPage((p) => Math.max(0, p - 1))}
+                  disabled={signalPage === 0}
+                  className="p-0.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5 text-zinc-500" />
+                </button>
+                <span className="text-[10px] text-zinc-400 tabular-nums min-w-[3rem] text-center">
+                  {signalPage + 1} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSignalPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={signalPage >= totalPages - 1}
+                  className="p-0.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+                >
+                  <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
+                </button>
+              </div>
+            )}
+          </div>
+          {signals.length === 0 ? (
+            <span className="text-[11px] text-zinc-400">No signals (last 2 days)</span>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {pagedSignals.map((sig, i) => {
                 const isActive = sig.symbol === symbol
                 return (
                   <button
@@ -207,9 +258,9 @@ export default function TradingPage() {
                     </span>
                   </button>
                 )
-              })
-            )}
-          </div>
+              })}
+            </div>
+          )}
         </div>
 
         {/* Main layout */}

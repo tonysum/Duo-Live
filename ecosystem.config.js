@@ -1,8 +1,9 @@
 module.exports = {
     apps: [
+
         {
             name: "duo-live-backend",
-            script: "python",
+            script: ".venv/bin/python",
             args: "-m live run",
             cwd: "./",
             env: {
@@ -19,7 +20,7 @@ module.exports = {
             log_date_format: "YYYY-MM-DD HH:mm:ss",
         },
         {
-            name: "duo-livefrontend",
+            name: "duo-live-frontend",
             script: "npx",
             args: "next start -H 0.0.0.0 -p 3000",
             cwd: "./web",
