@@ -48,6 +48,7 @@ class LiveTrader:
         self.verbose = verbose
         self.console = Console()
         self._running = False
+        self.auto_trade_enabled = False  # 自动交易开关 (默认关闭)
         self._main_task: Optional[asyncio.Task] = None
 
         # Shared Binance client
@@ -208,7 +209,7 @@ class LiveTrader:
                     )
 
                 # Wait 60 seconds before executing entries
-                await asyncio.sleep(60)
+                await asyncio.sleep(10)
 
                 # Execute pending signals ONE BY ONE (serialize live entries)
                 # Sort by surge ratio descending — strongest signals first
@@ -217,6 +218,23 @@ class LiveTrader:
                 for i, s in enumerate(pending):
                     if not self._running:
                         break
+
+                    # ── Auto-trade gate ──────────────────────
+                    if not self.auto_trade_enabled:
+                        self.console.print(
+                            f"  [yellow]⏸ Auto-trade OFF[/yellow] — "
+                            f"skip {s.symbol} (surge: {s.surge_ratio:.1f}x)"
+                        )
+                        self.store.save_signal_event(SignalEvent(
+                            timestamp=utc_now().isoformat(),
+                            symbol=s.symbol,
+                            surge_ratio=s.surge_ratio,
+                            price=str(s.price),
+                            accepted=False,
+                            reject_reason="auto_trade_disabled",
+                        ))
+                        continue
+
                     self.console.print(
                         f"\n[cyan]📡 Executing entry: {s.symbol}[/cyan] "
                         f"(surge: {s.surge_ratio:.1f}x)"
@@ -262,7 +280,7 @@ class LiveTrader:
                 self.console.print(f"  [dim]Skip {symbol}: already in position (exchange/pending)[/dim]")
                 self.store.save_signal_event(SignalEvent(
                     timestamp=now.isoformat(), symbol=symbol,
-                    surge_ratio=signal.surge_ratio, price="",
+                    surge_ratio=signal.surge_ratio, price=str(signal.price),
                     accepted=False, reject_reason="already in position",
                 ))
                 return False
@@ -272,7 +290,7 @@ class LiveTrader:
                 self.console.print(f"  [dim]Skip {symbol}: {reason}[/dim]")
                 self.store.save_signal_event(SignalEvent(
                     timestamp=now.isoformat(), symbol=symbol,
-                    surge_ratio=signal.surge_ratio, price="",
+                    surge_ratio=signal.surge_ratio, price=str(signal.price),
                     accepted=False, reject_reason=reason,
                 ))
                 return False
@@ -288,7 +306,7 @@ class LiveTrader:
             logger.warning("Failed to get price for %s: %s", symbol, e)
             self.store.save_signal_event(SignalEvent(
                 timestamp=now.isoformat(), symbol=symbol,
-                surge_ratio=signal.surge_ratio, price="",
+                surge_ratio=signal.surge_ratio, price=str(signal.price),
                 accepted=False, reject_reason=f"price fetch failed: {e}",
             ))
             return False
@@ -514,6 +532,8 @@ class LiveTrader:
         self.console.print(f"  Max hold:     {self.config.max_hold_hours}h")
         self.console.print(f"  Surge thr:    {self.config.surge_threshold}x")
         self.console.print(f"  Monitor intv: {self.config.monitor_interval_seconds}s")
+        auto_status = "[green]开启[/green]" if self.auto_trade_enabled else "[red]关闭[/red]"
+        self.console.print(f"  Auto trade:   {auto_status}")
 
         # Show real position count from Binance
         try:

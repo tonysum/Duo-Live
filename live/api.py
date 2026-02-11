@@ -29,6 +29,7 @@ class StatusResponse(BaseModel):
     unrealized_pnl: float
     daily_pnl: float
     open_positions: int
+    auto_trade_enabled: bool
     timestamp: str
 
 
@@ -98,6 +99,18 @@ class ConfigResponse(BaseModel):
     surge_threshold: float
     live_fixed_margin_usdt: float
     daily_loss_limit_usdt: float
+
+
+class AutoTradeRequest(BaseModel):
+    enabled: bool
+
+
+class UpdateConfigRequest(BaseModel):
+    leverage: int | None = None
+    max_positions: int | None = None
+    max_entries_per_day: int | None = None
+    live_fixed_margin_usdt: float | None = None
+    daily_loss_limit_usdt: float | None = None
 
 
 def _pair_trades(raw_fills: list[dict]) -> list[dict]:
@@ -196,6 +209,7 @@ def create_app(trader) -> FastAPI:
                 unrealized_pnl=bal["unrealized_pnl"],
                 daily_pnl=float(daily_pnl),
                 open_positions=open_count,
+                auto_trade_enabled=trader.auto_trade_enabled,
                 timestamp=now.isoformat(),
             )
         except Exception as e:
@@ -294,6 +308,47 @@ def create_app(trader) -> FastAPI:
             daily_loss_limit_usdt=float(c.daily_loss_limit_usdt),
         )
 
+    @app.post("/api/config")
+    async def update_config(req: UpdateConfigRequest):
+        """Update mutable config fields and persist to disk."""
+        from decimal import Decimal as D
+        c = trader.config
+        if req.leverage is not None:
+            c.leverage = req.leverage
+        if req.max_positions is not None:
+            c.max_positions = req.max_positions
+        if req.max_entries_per_day is not None:
+            c.max_entries_per_day = req.max_entries_per_day
+        if req.live_fixed_margin_usdt is not None:
+            c.live_fixed_margin_usdt = D(str(req.live_fixed_margin_usdt))
+        if req.daily_loss_limit_usdt is not None:
+            c.daily_loss_limit_usdt = D(str(req.daily_loss_limit_usdt))
+        c.save_to_file()
+        logger.info("配置已更新 (via API)")
+        return {
+            "leverage": c.leverage,
+            "max_positions": c.max_positions,
+            "max_entries_per_day": c.max_entries_per_day,
+            "live_fixed_margin_usdt": float(c.live_fixed_margin_usdt),
+            "daily_loss_limit_usdt": float(c.daily_loss_limit_usdt),
+            "message": "配置已保存",
+        }
+
+    # ── Auto-trade toggle ────────────────────────────────────────
+
+    @app.get("/api/auto-trade")
+    async def get_auto_trade():
+        """Get auto-trade status."""
+        return {"enabled": trader.auto_trade_enabled}
+
+    @app.post("/api/auto-trade")
+    async def set_auto_trade(req: AutoTradeRequest):
+        """Toggle auto-trade on/off."""
+        trader.auto_trade_enabled = req.enabled
+        status = "开启" if req.enabled else "关闭"
+        logger.info("自动交易已%s (via API)", status)
+        return {"enabled": trader.auto_trade_enabled, "message": f"自动交易已{status}"}
+
     @app.get("/api/klines/{symbol}", response_model=list[KlineItem])
     async def get_klines(
         symbol: str,
@@ -327,6 +382,22 @@ def create_app(trader) -> FastAPI:
         try:
             ticker = await trader.client.get_ticker_price(symbol.upper())
             return {"symbol": ticker.symbol, "price": float(ticker.price)}
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
+
+    @app.get("/api/tickers")
+    async def get_tickers():
+        """Get real-time prices and 24h change for all symbols (batch)."""
+        try:
+            data = await trader.client._request("GET", "/fapi/v1/ticker/24hr")
+            return {
+                item["symbol"]: {
+                    "price": float(item["lastPrice"]),
+                    "change_pct": float(item["priceChangePercent"]),
+                }
+                for item in data
+                if "symbol" in item
+            }
         except Exception as e:
             raise HTTPException(500, detail=str(e))
 

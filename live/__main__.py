@@ -1,7 +1,7 @@
 """duo-live entry point.
 
 Usage:
-    python -m live run [--margin N] [--loss-limit N]   # 启动实盘交易
+    python -m live run [--margin N] [--loss-limit N] [--auto-trade]  # 启动实盘交易
     python -m live status                              # 查看账户状态
     python -m live live-trades [N]                     # 查看实盘交易记录
     python -m live order <symbol> <price> [qty]        # 手动下单
@@ -177,7 +177,7 @@ def main():
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.INFO)
 
-    config = LiveTradingConfig()
+    config = LiveTradingConfig.load_from_file()
 
     # ── Sub-commands ─────────────────────────────────────────────────
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
@@ -557,13 +557,15 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
             print("❌ 发送失败，请检查 token 和 chat_id")
 
     elif cmd == "run":
-        # python -m live run [--margin 50] [--loss-limit 100]
+        # python -m live run [--margin 50] [--loss-limit 100] [--auto-trade]
         _, run_flags = _parse_flags(sys.argv[2:])
         load_dotenv()
         if "margin" in run_flags:
             config.live_fixed_margin_usdt = Decimal(run_flags["margin"])
         if "loss-limit" in run_flags:
             config.daily_loss_limit_usdt = Decimal(run_flags["loss-limit"])
+
+        auto_trade = "auto-trade" in run_flags
 
         # ── Startup confirmation ──────────────────────────────
         print()
@@ -577,14 +579,13 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print(f"  止损:       {config.stop_loss_pct}%")
         print(f"  最大持仓时间: {config.max_hold_hours}h")
         print(f"  最大持仓数:  {config.max_positions}")
+        print(f"  自动交易:   {'开启' if auto_trade else '关闭 (可在前端开启)'}")
         print()
-        confirm = input("  输入 yes 确认启动: ").strip().lower()
-        if confirm != "yes":
-            print("  ❌ 已取消")
-            sys.exit(0)
+        print("  🚀 启动中...")
         print()
 
         trader = LiveTrader(config=config)
+        trader.auto_trade_enabled = auto_trade
         asyncio.run(trader.start())
 
     else:
@@ -596,6 +597,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("  run                     启动实盘交易")
         print("    --margin N            固定保证金 (USDT, 默认5)")
         print("    --loss-limit N        每日亏损限额 (USDT, 默认50)")
+        print("    --auto-trade          启动时开启自动交易 (默认关闭)")
         print("  status                  查看账户状态")
         print("  trades [N]              查看实盘交易记录 (默认50条)")
         print("  signals [N]             查看信号历史 (默认50条)")

@@ -10,8 +10,8 @@ Data source:
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 
 from rich.console import Console
@@ -58,7 +58,12 @@ class LiveSurgeScanner:
 
         # Cache
         self._usdt_symbols: Optional[list[str]] = None
-        self._seen_signals: set[str] = set()  # "SYMBOL:YYYY-MM-DDTHH" dedup key
+        self._seen_signals: set[str] = set()  # "SYMBOL:YYYY-MM-DD" dedup key (one per day)
+
+        # Daily kline cache: symbol -> y_avg_hour_sell
+        # Invalidated automatically when UTC date changes.
+        self._daily_cache: dict[str, float] = {}
+        self._daily_cache_date: Optional[date] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,7 +104,7 @@ class LiveSurgeScanner:
                 result = await self.scan_current_hour()
                 new_signals = 0
                 for sig in result.signals:
-                    dedup_key = f"{sig.symbol}:{sig.signal_date.strftime('%Y-%m-%dT%H')}"
+                    dedup_key = f"{sig.symbol}:{sig.signal_date.strftime('%Y-%m-%d')}"
                     if dedup_key not in self._seen_signals:
                         self._seen_signals.add(dedup_key)
                         await self.signal_queue.put(sig)
@@ -132,7 +137,11 @@ class LiveSurgeScanner:
         now = datetime.now(timezone.utc)
         result = LiveScanResult(timestamp=now, signals=[])
 
-        # 1. Get all tradeable USDT symbols
+        # 0. Invalidate daily cache if UTC date changed
+        self._refresh_daily_cache_if_needed(now)
+
+        # 1. Refresh tradeable USDT symbols (picks up new listings/delistings)
+        self._usdt_symbols = None
         symbols = await self._get_usdt_symbols()
         result.symbols_scanned = len(symbols)
 
@@ -158,27 +167,9 @@ class LiveSurgeScanner:
         now: datetime,
     ) -> Optional[SurgeSignal]:
         """Scan a single symbol for surge signal (mirrors SurgeScanner._scan_symbol)."""
-        # ── Yesterday's daily kline ──────────────────────────────────
-        yesterday = now - timedelta(days=1)
-        y_start_ms = int(
-            yesterday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000
-        )
-        y_end_ms = y_start_ms + 86400_000
-
-        daily_klines = await self.client.get_klines(
-            symbol=symbol, interval="1d",
-            start_time=y_start_ms, end_time=y_end_ms, limit=1,
-        )
-        if not daily_klines:
-            return None
-
-        dk = daily_klines[0]
-        y_total_vol = float(dk.volume)
-        y_buy_vol = float(dk.taker_buy_base_volume)
-        y_sell_vol = y_total_vol - y_buy_vol
-        y_avg_hour_sell = y_sell_vol / 24.0
-
-        if y_avg_hour_sell <= 0:
+        # ── Yesterday's avg hourly sell volume (cached) ──────────────
+        y_avg_hour_sell = await self._get_yesterday_avg_sell(symbol, now)
+        if y_avg_hour_sell is None or y_avg_hour_sell <= 0:
             return None
 
         # ── Latest completed hourly kline ────────────────────────────
@@ -221,6 +212,47 @@ class LiveSurgeScanner:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _get_yesterday_avg_sell(self, symbol: str, now: datetime) -> Optional[float]:
+        """Return yesterday's avg hourly sell volume, with daily cache."""
+        cached = self._daily_cache.get(symbol)
+        if cached is not None:
+            return cached
+
+        yesterday = now - timedelta(days=1)
+        y_start_ms = int(
+            yesterday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000
+        )
+        y_end_ms = y_start_ms + 86400_000
+
+        daily_klines = await self.client.get_klines(
+            symbol=symbol, interval="1d",
+            start_time=y_start_ms, end_time=y_end_ms, limit=1,
+        )
+        if not daily_klines:
+            return None
+
+        dk = daily_klines[0]
+        y_total_vol = float(dk.volume)
+        y_buy_vol = float(dk.taker_buy_base_volume)
+        y_sell_vol = y_total_vol - y_buy_vol
+        y_avg_hour_sell = y_sell_vol / 24.0
+
+        # Cache the result (even if <= 0, to avoid re-fetching)
+        self._daily_cache[symbol] = y_avg_hour_sell
+        return y_avg_hour_sell
+
+    def _refresh_daily_cache_if_needed(self, now: datetime) -> None:
+        """Invalidate daily cache when UTC date changes."""
+        today = now.date()
+        if self._daily_cache_date != today:
+            if self._daily_cache:
+                logger.info(
+                    "UTC date changed to %s, clearing daily cache (%d entries)",
+                    today, len(self._daily_cache),
+                )
+            self._daily_cache.clear()
+            self._daily_cache_date = today
 
     async def _get_usdt_symbols(self) -> list[str]:
         """Get all tradeable USDT-margined perpetual symbols."""
