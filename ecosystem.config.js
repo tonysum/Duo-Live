@@ -1,10 +1,10 @@
 module.exports = {
     apps: [
         {
-            name: "duo-backend",
-            script: ".venv/bin/python",
+            name: "duo-live-backend",
+            script: "python",
             args: "-m live run",
-            cwd: "/opt/duo-live",
+            cwd: "./",
             env: {
                 // 从 .env 文件加载，或直接写在这里
                 // BINANCE_API_KEY: "",
@@ -19,10 +19,10 @@ module.exports = {
             log_date_format: "YYYY-MM-DD HH:mm:ss",
         },
         {
-            name: "duo-frontend",
-            script: "node_modules/.bin/next",
-            args: "start -H 0.0.0.0 -p 3000",
-            cwd: "/opt/duo-live/web",
+            name: "duo-livefrontend",
+            script: "npx",
+            args: "next start -H 0.0.0.0 -p 3000",
+            cwd: "./web",
             restart_delay: 3000,
             autorestart: true,
             log_date_format: "YYYY-MM-DD HH:mm:ss",

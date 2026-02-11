@@ -22,7 +22,7 @@ export default function SignalsPage() {
         .getSignals(200)
         .then(setSignals)
         .catch((e) => setError(e.message))
-      api.getTickers().then(setTickers).catch(() => {})
+      api.getTickers().then(setTickers).catch(() => { })
     }
     fetchAll()
     const iv = setInterval(fetchAll, 10000)
@@ -58,7 +58,7 @@ export default function SignalsPage() {
               <Radio className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
               Signal Events
               <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
-                ({signals.length})
+                ({deduped.length})
               </span>
             </h1>
           </div>
@@ -87,7 +87,7 @@ export default function SignalsPage() {
             "bg-white dark:bg-zinc-900/70",
             "border border-zinc-100 dark:border-zinc-800",
             "rounded-xl shadow-sm backdrop-blur-xl",
-            "overflow-hidden"
+            "overflow-auto"
           )}
         >
           {deduped.length === 0 ? (
@@ -95,9 +95,9 @@ export default function SignalsPage() {
               No signal data
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div>
               <table className="w-full">
-                <thead>
+                <thead className="sticky top-0 bg-white dark:bg-zinc-900 z-10">
                   <tr className="border-b border-zinc-100 dark:border-zinc-800">
                     {[
                       "Time",

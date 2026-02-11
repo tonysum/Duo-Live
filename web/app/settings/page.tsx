@@ -69,6 +69,16 @@ const FIELDS: FieldConfig[] = [
         step: 1,
         unit: "USDT",
     },
+    {
+        key: "margin_pct",
+        label: "保证金比例",
+        description: "百分比模式下，每笔使用可用余额的百分比",
+        type: "float",
+        min: 0.1,
+        max: 100,
+        step: 0.5,
+        unit: "%",
+    },
 ]
 
 export default function SettingsPage() {
@@ -89,6 +99,8 @@ export default function SettingsPage() {
                     max_entries_per_day: c.max_entries_per_day,
                     live_fixed_margin_usdt: c.live_fixed_margin_usdt,
                     daily_loss_limit_usdt: c.daily_loss_limit_usdt,
+                    margin_mode: c.margin_mode,
+                    margin_pct: c.margin_pct,
                 })
             })
             .catch((err) => {
@@ -136,6 +148,8 @@ export default function SettingsPage() {
             max_entries_per_day: config.max_entries_per_day,
             live_fixed_margin_usdt: config.live_fixed_margin_usdt,
             daily_loss_limit_usdt: config.daily_loss_limit_usdt,
+            margin_mode: config.margin_mode,
+            margin_pct: config.margin_pct,
         })
         setSuccess("")
     }
@@ -168,6 +182,42 @@ export default function SettingsPage() {
                     </div>
                 )}
 
+                {/* Margin mode toggle */}
+                <div
+                    className={cn(
+                        "bg-white dark:bg-zinc-900/70",
+                        "border border-zinc-100 dark:border-zinc-800",
+                        "rounded-xl shadow-sm backdrop-blur-xl",
+                        "px-5 py-4"
+                    )}
+                >
+                    <div className="space-y-0.5 mb-3">
+                        <label className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                            保证金模式
+                        </label>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            固定金额或按可用余额百分比计算
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-1 p-1 bg-zinc-100 dark:bg-zinc-800 rounded-lg w-fit">
+                        {(["fixed", "percent"] as const).map((mode) => (
+                            <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setDraft((prev) => ({ ...prev, margin_mode: mode }))}
+                                className={cn(
+                                    "px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200",
+                                    draft.margin_mode === mode
+                                        ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm"
+                                        : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-300"
+                                )}
+                            >
+                                {mode === "fixed" ? "固定金额" : "余额百分比"}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
                 {/* Config fields */}
                 <div
                     className={cn(
@@ -177,7 +227,11 @@ export default function SettingsPage() {
                         "divide-y divide-zinc-100 dark:divide-zinc-800"
                     )}
                 >
-                    {FIELDS.map((field) => (
+                    {FIELDS.filter((field) => {
+                        if (field.key === "live_fixed_margin_usdt") return draft.margin_mode === "fixed"
+                        if (field.key === "margin_pct") return draft.margin_mode === "percent"
+                        return true
+                    }).map((field) => (
                         <div
                             key={field.key}
                             className="px-5 py-4 space-y-2"

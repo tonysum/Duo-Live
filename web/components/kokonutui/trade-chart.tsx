@@ -25,6 +25,7 @@ interface Props {
   slPrice?: number
   entryPrice?: number
   exitPrice?: number
+  onRealtimeUpdate?: (updater: (kline: Kline) => void) => void
 }
 
 export default function TradeChart({
@@ -34,6 +35,7 @@ export default function TradeChart({
   slPrice,
   entryPrice,
   exitPrice,
+  onRealtimeUpdate,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -88,9 +90,9 @@ export default function TradeChart({
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
-    })
+    }, 1)
     volumeSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.55, bottom: 0 },
+      scaleMargins: { top: 0.1, bottom: 0 },
     })
 
     chartRef.current = chart
@@ -249,6 +251,31 @@ export default function TradeChart({
       initialFitDone.current = true
     }
   }, [klines, markers, tpPrice, slPrice, entryPrice, exitPrice])
+
+  // Expose real-time update function
+  useEffect(() => {
+    if (!onRealtimeUpdate || !candleRef.current || !volumeRef.current) return
+
+    const candleSeries = candleRef.current
+    const volumeSeries = volumeRef.current
+
+    onRealtimeUpdate((kline: Kline) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      candleSeries.update({
+        time: kline.time as any,
+        open: kline.open,
+        high: kline.high,
+        low: kline.low,
+        close: kline.close,
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      volumeSeries.update({
+        time: kline.time as any,
+        value: kline.volume,
+        color: kline.close >= kline.open ? "#34D39990" : "#F8717180",
+      })
+    })
+  }, [onRealtimeUpdate, klines])
 
   return <div ref={containerRef} className="w-full h-full" />
 }

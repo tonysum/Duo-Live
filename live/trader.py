@@ -367,9 +367,21 @@ class LiveTrader:
             except Exception as e:
                 logger.warning("查询每日盈亏失败 (fail-open): %s", e)
 
-        # ── Position sizing (fixed margin) ───────────────────────
-        margin = self.config.live_fixed_margin_usdt
-        logger.info("实盘固定保证金: %s USDT", margin)
+        # ── Position sizing ────────────────────────────────────────
+        if self.config.margin_mode == "percent":
+            try:
+                account_info = await self.client.get_account_info()
+                available = Decimal(str(account_info.get("availableBalance", "0")))
+                margin = available * Decimal(str(self.config.margin_pct)) / Decimal("100")
+                margin = max(margin, Decimal("1"))  # 最少 1 USDT
+                logger.info("百分比保证金: %.2f USDT (%.1f%% of %.2f)",
+                            margin, self.config.margin_pct, available)
+            except Exception as e:
+                logger.warning("获取余额失败, 降级为固定保证金: %s", e)
+                margin = self.config.live_fixed_margin_usdt
+        else:
+            margin = self.config.live_fixed_margin_usdt
+            logger.info("固定保证金: %s USDT", margin)
         quantity = margin * self.config.leverage / entry_price
 
         # ── Place live order ────────────────────────────────────

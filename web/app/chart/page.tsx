@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { api, Kline } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
 import dynamic from "next/dynamic"
 import { LineChart } from "lucide-react"
+import { useKlineStream } from "@/hooks/useKlineStream"
 
 const TradeChart = dynamic(() => import("@/components/kokonutui/trade-chart"), {
   ssr: false,
@@ -20,6 +21,9 @@ export default function ChartPage() {
   const [interval, setInterval_] = useState("1h")
   const [ticker, setTicker] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
+
+  // Real-time updater ref
+  const updaterRef = useRef<((kline: Kline) => void) | null>(null)
 
   const loadChart = useCallback(async () => {
     setLoading(true)
@@ -39,9 +43,17 @@ export default function ChartPage() {
 
   useEffect(() => {
     loadChart()
-    const iv = setInterval(loadChart, 15000)
-    return () => clearInterval(iv)
   }, [loadChart])
+
+  // WebSocket real-time kline updates
+  useKlineStream(symbol, interval, (kline) => {
+    // Update ticker price
+    setTicker(kline.close)
+    // Push update to chart via updater
+    if (updaterRef.current) {
+      updaterRef.current(kline)
+    }
+  })
 
   const handleSearch = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") setSymbol(searchInput.toUpperCase())
@@ -53,6 +65,10 @@ export default function ChartPage() {
         <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
           <LineChart className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
           Chart
+          <span className="relative flex h-2 w-2 ml-1">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+          </span>
         </h1>
 
         <div
@@ -107,7 +123,12 @@ export default function ChartPage() {
                 Loading...
               </div>
             ) : (
-              <TradeChart klines={klines} />
+              <TradeChart
+                klines={klines}
+                onRealtimeUpdate={(updater) => {
+                  updaterRef.current = updater
+                }}
+              />
             )}
           </div>
         </div>

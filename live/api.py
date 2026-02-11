@@ -99,6 +99,8 @@ class ConfigResponse(BaseModel):
     surge_threshold: float
     live_fixed_margin_usdt: float
     daily_loss_limit_usdt: float
+    margin_mode: str
+    margin_pct: float
 
 
 class AutoTradeRequest(BaseModel):
@@ -111,6 +113,8 @@ class UpdateConfigRequest(BaseModel):
     max_entries_per_day: int | None = None
     live_fixed_margin_usdt: float | None = None
     daily_loss_limit_usdt: float | None = None
+    margin_mode: str | None = None
+    margin_pct: float | None = None
 
 
 def _pair_trades(raw_fills: list[dict]) -> list[dict]:
@@ -265,17 +269,14 @@ def create_app(trader) -> FastAPI:
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/signals", response_model=list[SignalItem])
-    async def get_signals(limit: int = Query(100, ge=1, le=1000)):
-        """Get signal events (only last 24h)."""
+    async def get_signals(limit: int = Query(100, ge=1, le=5000)):
+        """Get all signal events."""
         store = trader.store
         if not store:
             return []
 
-        from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-
         events = store.get_signal_events(limit=limit)
-        filtered = [
+        result = [
             SignalItem(
                 timestamp=e.timestamp,
                 symbol=e.symbol,
@@ -285,10 +286,9 @@ def create_app(trader) -> FastAPI:
                 reject_reason=e.reject_reason,
             )
             for e in events
-            if e.timestamp >= cutoff
         ]
-        filtered.sort(key=lambda s: (s.surge_ratio, s.timestamp), reverse=True)
-        return filtered
+        result.sort(key=lambda s: (s.timestamp, s.surge_ratio), reverse=True)
+        return result
 
     @app.get("/api/config", response_model=ConfigResponse)
     async def get_config():
@@ -306,6 +306,8 @@ def create_app(trader) -> FastAPI:
             surge_threshold=c.surge_threshold,
             live_fixed_margin_usdt=float(c.live_fixed_margin_usdt),
             daily_loss_limit_usdt=float(c.daily_loss_limit_usdt),
+            margin_mode=c.margin_mode,
+            margin_pct=c.margin_pct,
         )
 
     @app.post("/api/config")
@@ -323,6 +325,10 @@ def create_app(trader) -> FastAPI:
             c.live_fixed_margin_usdt = D(str(req.live_fixed_margin_usdt))
         if req.daily_loss_limit_usdt is not None:
             c.daily_loss_limit_usdt = D(str(req.daily_loss_limit_usdt))
+        if req.margin_mode is not None and req.margin_mode in ("fixed", "percent"):
+            c.margin_mode = req.margin_mode
+        if req.margin_pct is not None:
+            c.margin_pct = req.margin_pct
         c.save_to_file()
         logger.info("配置已更新 (via API)")
         return {
@@ -331,6 +337,8 @@ def create_app(trader) -> FastAPI:
             "max_entries_per_day": c.max_entries_per_day,
             "live_fixed_margin_usdt": float(c.live_fixed_margin_usdt),
             "daily_loss_limit_usdt": float(c.daily_loss_limit_usdt),
+            "margin_mode": c.margin_mode,
+            "margin_pct": c.margin_pct,
             "message": "配置已保存",
         }
 

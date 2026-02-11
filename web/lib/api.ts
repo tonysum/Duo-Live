@@ -69,6 +69,8 @@ export interface Config {
   surge_threshold: number;
   live_fixed_margin_usdt: number;
   daily_loss_limit_usdt: number;
+  margin_mode: string;
+  margin_pct: number;
 }
 
 export interface OrderRequest {
