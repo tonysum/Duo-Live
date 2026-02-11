@@ -37,93 +37,74 @@ export default function PositionsPage() {
         }
     };
 
+    const totalPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
+
     return (
         <div>
-            <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold">
-                    当前持仓
-                    <span className="ml-2 text-sm text-[var(--text-muted)]">
-                        ({positions.length})
-                    </span>
-                </h2>
-                {error && (
-                    <span className="text-xs text-red-400 bg-red-400/10 px-3 py-1 rounded">
-                        ⚠️ {error}
-                    </span>
-                )}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>当前持仓</h2>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{positions.length} 笔</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    {error && (
+                        <span style={{ fontSize: 11, color: "var(--accent-red)", background: "rgba(248,113,113,0.1)", padding: "4px 10px", borderRadius: 9999 }}>
+                            ⚠ {error}
+                        </span>
+                    )}
+                    {positions.length > 0 && (
+                        <span className={`font-mono ${totalPnl >= 0 ? "pnl-positive" : "pnl-negative"}`} style={{ fontSize: 14, fontWeight: 600 }}>
+                            合计 {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)} USDT
+                        </span>
+                    )}
+                </div>
             </div>
 
-            {positions.length === 0 ? (
-                <div className="bg-[var(--bg-card)] rounded-xl p-12 border border-[var(--border)] text-center">
-                    <p className="text-[var(--text-muted)]">暂无持仓</p>
-                </div>
-            ) : (
-                <div className="grid gap-4">
-                    {positions.map((p) => (
-                        <div
-                            key={p.symbol}
-                            className="bg-[var(--bg-card)] rounded-xl p-5 border border-[var(--border)] hover:border-[var(--accent-blue)]/30 transition-colors"
-                        >
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-4">
-                                    <div>
-                                        <span className="text-lg font-bold">{p.symbol}</span>
-                                        <span
-                                            className={`ml-2 text-xs px-1.5 py-0.5 rounded ${p.side === "SHORT"
-                                                    ? "bg-red-500/20 text-red-400"
-                                                    : "bg-green-500/20 text-green-400"
-                                                }`}
+            <div className="card">
+                {positions.length === 0 ? (
+                    <div style={{ padding: "52px 0", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>暂无持仓</div>
+                ) : (
+                    <table className="tbl">
+                        <thead>
+                            <tr>
+                                <th>币种</th>
+                                <th>方向</th>
+                                <th className="right">数量</th>
+                                <th className="right">入场价</th>
+                                <th className="right">杠杆</th>
+                                <th className="right">未实现盈亏</th>
+                                <th className="center">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {positions.map((p) => (
+                                <tr key={p.symbol}>
+                                    <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>{p.symbol}</td>
+                                    <td>
+                                        <span className={`badge ${p.side === "SHORT" ? "badge-short" : "badge-long"}`}>{p.side}</span>
+                                    </td>
+                                    <td className="right font-mono">{p.quantity}</td>
+                                    <td className="right font-mono">{p.entry_price.toFixed(4)}</td>
+                                    <td className="right font-mono">{p.leverage}×</td>
+                                    <td className={`right font-mono ${p.unrealized_pnl >= 0 ? "pnl-positive" : "pnl-negative"}`}>
+                                        {p.unrealized_pnl >= 0 ? "+" : ""}{p.unrealized_pnl.toFixed(4)}
+                                    </td>
+                                    <td className="center">
+                                        <button
+                                            onClick={() => handleClose(p.symbol)}
+                                            disabled={closing === p.symbol}
+                                            className="badge badge-reject"
+                                            style={{ cursor: "pointer", border: "none", padding: "3px 10px", opacity: closing === p.symbol ? 0.4 : 1, transition: "opacity 0.15s" }}
                                         >
-                                            {p.side}
-                                        </span>
-                                    </div>
-                                </div>
-
-                                <button
-                                    onClick={() => handleClose(p.symbol)}
-                                    disabled={closing === p.symbol}
-                                    className="px-4 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50"
-                                >
-                                    {closing === p.symbol ? "平仓中..." : "平仓"}
-                                </button>
-                            </div>
-
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
-                                <div>
-                                    <p className="text-xs text-[var(--text-muted)]">入场价</p>
-                                    <p className="font-mono text-sm">{p.entry_price}</p>
-                                </div>
-                                <div>
-                                    <p className="text-xs text-[var(--text-muted)]">数量</p>
-                                    <p className="font-mono text-sm">{p.quantity}</p>
-                                </div>
-                                <div>
-                                    <p className="text-xs text-[var(--text-muted)]">杠杆</p>
-                                    <p className="font-mono text-sm">{p.leverage}x</p>
-                                </div>
-                                <div>
-                                    <p className="text-xs text-[var(--text-muted)]">未实现盈亏</p>
-                                    <p
-                                        className={`font-mono text-sm ${p.unrealized_pnl >= 0
-                                                ? "text-[var(--accent-green)]"
-                                                : "text-[var(--accent-red)]"
-                                            }`}
-                                    >
-                                        {p.unrealized_pnl >= 0 ? "+" : ""}
-                                        {p.unrealized_pnl.toFixed(4)}
-                                    </p>
-                                </div>
-                                {p.strength && (
-                                    <div>
-                                        <p className="text-xs text-[var(--text-muted)]">强度</p>
-                                        <p className="text-sm">{p.strength}</p>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
+                                            {closing === p.symbol ? "平仓中..." : "平仓"}
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
         </div>
     );
 }

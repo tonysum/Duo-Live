@@ -5,100 +5,113 @@ import { api, Signal } from "@/lib/api";
 
 export default function SignalsPage() {
     const [signals, setSignals] = useState<Signal[]>([]);
+    const [tickers, setTickers] = useState<Record<string, { price: number; change_pct: number }>>({});
     const [error, setError] = useState("");
 
     useEffect(() => {
-        api
-            .getSignals(200)
-            .then(setSignals)
-            .catch((e) => setError(e.message));
-
-        const iv = setInterval(() => {
-            api.getSignals(200).then(setSignals).catch(() => { });
-        }, 10000);
+        const fetchAll = () => {
+            api.getSignals(200).then(setSignals).catch((e) => setError(e.message));
+            api.getTickers().then(setTickers).catch(() => { });
+        };
+        fetchAll();
+        const iv = setInterval(fetchAll, 10000);
         return () => clearInterval(iv);
     }, []);
+
+    // Sort: date descending, same day by surge_ratio descending
+    const sorted = [...signals].sort((a, b) => {
+        const dayA = a.timestamp.slice(0, 10);
+        const dayB = b.timestamp.slice(0, 10);
+        if (dayA !== dayB) return dayB.localeCompare(dayA);
+        return b.surge_ratio - a.surge_ratio;
+    });
+
+    // Dedup: keep only first signal per symbol per day
+    const seen = new Set<string>();
+    const deduped = sorted.filter((s) => {
+        const key = `${s.symbol}:${s.timestamp.slice(0, 10)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 
     const accepted = signals.filter((s) => s.accepted);
     const rejected = signals.filter((s) => !s.accepted);
 
     return (
         <div>
-            <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold">
-                    信号事件
-                    <span className="ml-2 text-sm text-[var(--text-muted)]">
-                        ({signals.length})
-                    </span>
-                </h2>
-                <div className="flex gap-3 text-xs">
-                    <span className="text-green-400">
-                        ✅ 通过 {accepted.length}
-                    </span>
-                    <span className="text-red-400">
-                        ❌ 拒绝 {rejected.length}
-                    </span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>信号事件</h2>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{signals.length} 条</span>
+                </div>
+                <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                    <span style={{ color: "var(--accent-green)", fontWeight: 500 }}>通过 {accepted.length}</span>
+                    <span style={{ color: "var(--accent-red)", fontWeight: 500 }}>拒绝 {rejected.length}</span>
                 </div>
             </div>
 
             {error && (
-                <p className="text-xs text-red-400 bg-red-400/10 px-3 py-2 rounded mb-4">
-                    ⚠️ {error}
-                </p>
+                <div style={{ fontSize: 11, color: "var(--accent-red)", background: "rgba(248,113,113,0.1)", padding: "8px 14px", borderRadius: "var(--radius-lg)", marginBottom: 16 }}>
+                    ⚠ {error}
+                </div>
             )}
 
-            <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] overflow-hidden">
-                <table className="w-full text-sm">
-                    <thead>
-                        <tr className="text-[var(--text-muted)] text-xs border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-                            <th className="text-left px-4 py-2.5">时间</th>
-                            <th className="text-left px-4 py-2.5">币种</th>
-                            <th className="text-right px-4 py-2.5">暴涨倍数</th>
-                            <th className="text-right px-4 py-2.5">价格</th>
-                            <th className="text-center px-4 py-2.5">状态</th>
-                            <th className="text-left px-4 py-2.5">拒绝原因</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {signals.map((s, i) => (
-                            <tr
-                                key={i}
-                                className="border-b border-[var(--border)]/30 hover:bg-[var(--bg-hover)] transition-colors"
-                            >
-                                <td className="px-4 py-2 text-xs text-[var(--text-secondary)] font-mono">
-                                    {s.timestamp.slice(0, 19).replace("T", " ")}
-                                </td>
-                                <td className="px-4 py-2 font-medium">{s.symbol}</td>
-                                <td className="px-4 py-2 text-right font-mono">
-                                    <span className="text-[var(--accent-yellow)]">
-                                        {s.surge_ratio.toFixed(1)}x
-                                    </span>
-                                </td>
-                                <td className="px-4 py-2 text-right font-mono text-xs">
-                                    {s.price}
-                                </td>
-                                <td className="px-4 py-2 text-center">
-                                    <span
-                                        className={`text-xs px-2 py-0.5 rounded-full ${s.accepted
-                                                ? "bg-green-500/20 text-green-400"
-                                                : "bg-red-500/20 text-red-400"
-                                            }`}
-                                    >
-                                        {s.accepted ? "通过" : "拒绝"}
-                                    </span>
-                                </td>
-                                <td className="px-4 py-2 text-xs text-[var(--text-muted)] max-w-[200px] truncate">
-                                    {s.reject_reason || "—"}
-                                </td>
+            <div className="card">
+                {deduped.length === 0 ? (
+                    <div style={{ padding: "52px 0", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>暂无信号数据</div>
+                ) : (
+                    <table className="tbl">
+                        <thead>
+                            <tr>
+                                <th>时间</th>
+                                <th>币种</th>
+                                <th className="right">暴涨倍数</th>
+                                <th className="right">信号价格</th>
+                                <th className="right">实时价格</th>
+                                <th className="right">涨幅</th>
+                                <th className="center">状态</th>
+                                <th>拒绝原因</th>
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            {deduped.map((s, i) => {
+                                const ticker = tickers[s.symbol];
+                                const curPrice = ticker?.price;
+                                const changePct = ticker?.change_pct;
 
-                {signals.length === 0 && (
-                    <div className="py-12 text-center text-[var(--text-muted)]">
-                        暂无信号数据
-                    </div>
+                                return (
+                                    <tr key={i}>
+                                        <td className="font-mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                            {s.timestamp.slice(0, 19).replace("T", " ")}
+                                        </td>
+                                        <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>{s.symbol}</td>
+                                        <td className="right font-mono" style={{ color: "var(--accent-yellow)" }}>
+                                            {s.surge_ratio.toFixed(1)}×
+                                        </td>
+                                        <td className="right font-mono">{s.price}</td>
+                                        <td className="right font-mono">
+                                            {curPrice != null ? curPrice : "—"}
+                                        </td>
+                                        <td className="right font-mono" style={{
+                                            color: changePct == null ? "var(--text-muted)"
+                                                : changePct >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                                        }}>
+                                            {changePct != null ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
+                                        </td>
+                                        <td className="center">
+                                            <span className={`badge ${s.accepted ? "badge-pass" : "badge-reject"}`}>
+                                                {s.accepted ? "通过" : "拒绝"}
+                                            </span>
+                                        </td>
+                                        <td style={{ fontSize: 11, color: "var(--text-muted)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                            {s.reject_reason || "—"}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
                 )}
             </div>
         </div>

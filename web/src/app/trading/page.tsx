@@ -8,7 +8,7 @@ export default function TradingPage() {
     const [symbol, setSymbol] = useState("BTCUSDT");
     const [searchInput, setSearchInput] = useState("BTCUSDT");
     const [klines, setKlines] = useState<Kline[]>([]);
-    const [interval, setInterval_] = useState("15m");
+    const [interval, setInterval_] = useState("1h");
     const [positions, setPositions] = useState<Position[]>([]);
     const [ticker, setTicker] = useState<number | null>(null);
     const [loading, setLoading] = useState(false);
@@ -60,51 +60,56 @@ export default function TradingPage() {
 
     // Load signals
     useEffect(() => {
-        api.getSignals(50).then(s => setSignals(s.sort((a, b) => b.surge_ratio - a.surge_ratio))).catch(() => { });
+        const sortAndDedup = (raw: Signal[]) => {
+            const sorted = [...raw].sort((a, b) => {
+                const dayA = a.timestamp.slice(0, 10);
+                const dayB = b.timestamp.slice(0, 10);
+                if (dayA !== dayB) return dayB.localeCompare(dayA);
+                return b.surge_ratio - a.surge_ratio;
+            });
+            const seen = new Set<string>();
+            return sorted.filter((s) => {
+                const key = `${s.symbol}:${s.timestamp.slice(0, 10)}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        };
+        api.getSignals(50).then(s => setSignals(sortAndDedup(s))).catch(() => { });
         const iv = setInterval(() => {
-            api.getSignals(50).then(s => setSignals(s.sort((a, b) => b.surge_ratio - a.surge_ratio))).catch(() => { });
+            api.getSignals(50).then(s => setSignals(sortAndDedup(s))).catch(() => { });
         }, 30000);
         return () => clearInterval(iv);
     }, []);
 
     const handleSearch = (e: React.KeyboardEvent) => {
-        if (e.key === "Enter") {
-            setSymbol(searchInput.toUpperCase());
-        }
+        if (e.key === "Enter") setSymbol(searchInput.toUpperCase());
     };
 
     const handleSignalClick = (sig: Signal) => {
         const sym = sig.symbol.toUpperCase();
         setSymbol(sym);
         setSearchInput(sym);
-        setSide("SELL"); // surge short strategy
+        setSide("SELL");
     };
 
     const handleSubmit = async () => {
         const qtyLabel = qtyMode === "margin"
             ? `保证金: ${margin} USDT × ${leverage}x`
             : `数量: ${quantity}`;
-        if (!confirm(`确认 ${side === "SELL" ? "做空" : "做多"} ${symbol}？\n${qtyLabel}`))
-            return;
+        if (!confirm(`确认 ${side === "SELL" ? "做空" : "做多"} ${symbol}？\n${qtyLabel}`)) return;
 
         setSubmitting(true);
         setResult("");
         try {
             const order: OrderRequest = {
-                symbol,
-                side,
-                order_type: orderType,
+                symbol, side, order_type: orderType,
                 leverage: parseInt(leverage),
                 trading_password: password,
             };
-            if (qtyMode === "margin") {
-                order.margin_usdt = parseFloat(margin);
-            } else {
-                order.quantity = parseFloat(quantity);
-            }
-            if (orderType === "LIMIT" && price) {
-                order.price = parseFloat(price);
-            }
+            if (qtyMode === "margin") order.margin_usdt = parseFloat(margin);
+            else order.quantity = parseFloat(quantity);
+            if (orderType === "LIMIT" && price) order.price = parseFloat(price);
             if (tpPct) order.tp_pct = parseFloat(tpPct);
             if (slPct) order.sl_pct = parseFloat(slPct);
 
@@ -118,76 +123,99 @@ export default function TradingPage() {
         }
     };
 
+    const intervals = ["5m", "15m", "1h", "4h", "1d", "1w", "1M"];
+
+    const tabBtn = (active: boolean) => ({
+        flex: 1, padding: "5px 0", fontSize: 11, borderRadius: "var(--radius-md)",
+        border: "none", cursor: "pointer" as const,
+        background: active ? "rgba(96,165,250,0.12)" : "transparent",
+        color: active ? "var(--accent-blue)" : "var(--text-muted)",
+        fontWeight: active ? 500 : 400 as any,
+        transition: "all 0.15s",
+    });
+
+    const levBtn = (active: boolean) => ({
+        flex: 1, padding: "5px 0", fontSize: 11, borderRadius: "var(--radius-md)",
+        border: "none", cursor: "pointer" as const,
+        background: active ? "var(--accent-blue)" : "var(--bg-card-solid)",
+        color: active ? "#18181B" : "var(--text-muted)",
+        transition: "all 0.15s",
+    });
+
     return (
-        <div className="flex flex-col -mx-6 -mt-6" style={{ height: "calc(100vh - 0px)" }}>
-            {/* Signal bar — horizontal scrollable list */}
-            <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-2 flex-shrink-0">
-                <div className="flex items-center gap-2 overflow-x-auto">
-                    <span className="text-[10px] text-[var(--text-muted)] whitespace-nowrap mr-1">📡 信号</span>
+        <div style={{ display: "flex", flexDirection: "column", margin: "-20px", height: "100vh" }}>
+            {/* Signal ribbon */}
+            <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "6px 12px", flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto" }}>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap", marginRight: 4 }}>信号</span>
                     {signals.length === 0 ? (
-                        <span className="text-[10px] text-[var(--text-muted)]">暂无信号</span>
+                        <span style={{ fontSize: 10, color: "var(--text-muted)" }}>暂无信号</span>
                     ) : signals.map((sig, i) => {
                         const isActive = sig.symbol === symbol;
                         return (
                             <button
                                 key={`${sig.symbol}-${sig.timestamp}-${i}`}
                                 onClick={() => handleSignalClick(sig)}
-                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs whitespace-nowrap transition-all
-                                        ${isActive
-                                        ? "bg-[var(--accent-blue)]/20 border border-[var(--accent-blue)]/50 text-[var(--accent-blue)]"
-                                        : "bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent-blue)]/30 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                                    }`}
+                                style={{
+                                    display: "flex", alignItems: "center", gap: 4,
+                                    padding: "3px 8px", borderRadius: 4, fontSize: 11,
+                                    whiteSpace: "nowrap", transition: "all 0.12s",
+                                    border: isActive ? "1px solid rgba(96,165,250,0.4)" : "1px solid var(--border)",
+                                    background: isActive ? "rgba(96,165,250,0.1)" : "var(--bg-card-solid)",
+                                    color: isActive ? "var(--accent-blue)" : "var(--text-secondary)",
+                                    cursor: "pointer",
+                                }}
                             >
-                                <span className="font-medium">{sig.symbol.replace("USDT", "")}</span>
-                                <span className={`font-mono text-[10px] ${sig.accepted ? "text-green-400" : "text-orange-400"}`}>
+                                <span style={{ fontWeight: 500 }}>{sig.symbol.replace("USDT", "")}</span>
+                                <span className="font-mono" style={{ fontSize: 10, color: sig.accepted ? "var(--accent-green)" : "var(--accent-yellow)" }}>
                                     {sig.surge_ratio.toFixed(1)}x
                                 </span>
-                                {sig.accepted ? (
-                                    <span className="text-[9px] px-1 rounded bg-green-500/20 text-green-400">✓</span>
-                                ) : (
-                                    <span className="text-[9px] px-1 rounded bg-orange-500/15 text-orange-400" title={sig.reject_reason}>✗</span>
-                                )}
-                                <span className="text-[9px] text-[var(--text-muted)]">
-                                    {sig.timestamp?.slice(11, 16)}
-                                </span>
+                                <span style={{
+                                    fontSize: 9, padding: "0 3px", borderRadius: 2,
+                                    background: sig.accepted ? "rgba(52,211,153,0.12)" : "rgba(248,113,113,0.12)",
+                                    color: sig.accepted ? "var(--accent-green)" : "var(--accent-red)",
+                                }}>{sig.accepted ? "✓" : "✗"}</span>
+                                <span style={{ fontSize: 9, color: "var(--text-muted)" }}>{sig.timestamp?.slice(11, 16)}</span>
                             </button>
                         );
                     })}
                 </div>
             </div>
 
-            {/* Main content: chart + order panel */}
-            <div className="flex flex-1 min-h-0">
+            {/* Main: chart + order panel */}
+            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
                 {/* Chart area */}
-                <div className="flex-1 flex flex-col min-w-0">
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
                     {/* Chart header */}
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
-                        <div className="flex items-center gap-3">
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                             <input
                                 type="text"
                                 value={searchInput}
                                 onChange={(e) => setSearchInput(e.target.value.toUpperCase())}
                                 onKeyDown={handleSearch}
                                 placeholder="搜索币种..."
-                                className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm w-36
-                           focus:border-[var(--accent-blue)] focus:outline-none"
+                                className="input"
+                                style={{ width: 120, fontSize: 12 }}
                             />
                             {ticker && (
-                                <span className="text-lg font-bold font-mono">
+                                <span className="font-mono" style={{ fontSize: 16, fontWeight: 700 }}>
                                     ${ticker.toFixed(ticker >= 100 ? 2 : 4)}
                                 </span>
                             )}
                         </div>
-
-                        <div className="flex gap-1">
-                            {["5m", "15m", "1h", "4h", "1d", "1w", "1M"].map((iv) => (
+                        <div style={{ display: "flex", gap: 2 }}>
+                            {intervals.map((iv) => (
                                 <button
                                     key={iv}
                                     onClick={() => setInterval_(iv)}
-                                    className={`px-2 py-1 text-xs rounded transition-colors ${interval === iv
-                                        ? "bg-[var(--accent-blue)] text-white"
-                                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                                        }`}
+                                    style={{
+                                        padding: "3px 8px", fontSize: 11, borderRadius: "var(--radius-md)",
+                                        border: "none", cursor: "pointer",
+                                        background: interval === iv ? "var(--accent-blue)" : "transparent",
+                                        color: interval === iv ? "#18181B" : "var(--text-muted)",
+                                        transition: "all 0.15s",
+                                    }}
                                 >
                                     {iv}
                                 </button>
@@ -196,41 +224,30 @@ export default function TradingPage() {
                     </div>
 
                     {/* Chart */}
-                    <div className="flex-1 relative">
+                    <div style={{ flex: 1, position: "relative" }}>
                         {loading && klines.length === 0 ? (
-                            <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)]">
+                            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 12 }}>
                                 加载中...
                             </div>
                         ) : (
-                            <TradeChart klines={klines} />
+                            <TradeChart key={`${symbol}-${interval}`} klines={klines} />
                         )}
                     </div>
 
-                    {/* Current positions */}
+                    {/* Current positions bar */}
                     {positions.length > 0 && (
-                        <div className="border-t border-[var(--border)] px-4 py-2">
-                            <p className="text-xs text-[var(--text-muted)] mb-1">当前持仓</p>
-                            <div className="flex gap-4 overflow-x-auto">
+                        <div style={{ borderTop: "1px solid var(--border)", padding: "6px 12px" }}>
+                            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 4px" }}>当前持仓</p>
+                            <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
                                 {positions.map((p) => (
-                                    <div
-                                        key={p.symbol}
-                                        className="flex items-center gap-2 text-xs bg-[var(--bg-card)] rounded px-3 py-1.5"
-                                    >
-                                        <span className="font-medium">{p.symbol}</span>
-                                        <span
-                                            className={`${p.side === "SHORT" ? "text-red-400" : "text-green-400"
-                                                }`}
-                                        >
-                                            {p.side}
-                                        </span>
-                                        <span
-                                            className={`font-mono ${p.unrealized_pnl >= 0
-                                                ? "text-[var(--accent-green)]"
-                                                : "text-[var(--accent-red)]"
-                                                }`}
-                                        >
-                                            {p.unrealized_pnl >= 0 ? "+" : ""}
-                                            {p.unrealized_pnl.toFixed(4)}
+                                    <div key={p.symbol} style={{
+                                        display: "flex", alignItems: "center", gap: 6,
+                                        fontSize: 11, background: "var(--bg-card-solid)", borderRadius: "var(--radius-md)", padding: "4px 10px"
+                                    }}>
+                                        <span style={{ fontWeight: 500 }}>{p.symbol}</span>
+                                        <span style={{ color: p.side === "SHORT" ? "var(--accent-red)" : "var(--accent-green)" }}>{p.side}</span>
+                                        <span className={`font-mono ${p.unrealized_pnl >= 0 ? "pnl-positive" : "pnl-negative"}`}>
+                                            {p.unrealized_pnl >= 0 ? "+" : ""}{p.unrealized_pnl.toFixed(4)}
                                         </span>
                                     </div>
                                 ))}
@@ -239,226 +256,139 @@ export default function TradingPage() {
                     )}
                 </div>
 
-                {/* Order panel — fixed width, never shrinks */}
-                <div className="border-l border-[var(--border)] bg-[var(--bg-secondary)] overflow-y-auto"
-                    style={{ width: 320, minWidth: 320, maxWidth: 320, flexShrink: 0 }}>
-                    <div className="p-4">
+                {/* Order panel */}
+                <div style={{ width: 300, minWidth: 300, maxWidth: 300, flexShrink: 0, borderLeft: "1px solid var(--border)", background: "var(--bg-secondary)", overflowY: "auto" }}>
+                    <div style={{ padding: 14 }}>
                         {!unlocked ? (
-                            /* Password lock screen */
-                            <div className="flex flex-col items-center justify-center py-12">
-                                <div className="text-4xl mb-4">🔒</div>
-                                <h3 className="text-sm font-medium mb-1">交易已锁定</h3>
-                                <p className="text-xs text-[var(--text-muted)] mb-6">输入密码以激活交易功能</p>
+                            /* Password lock */
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 48, paddingBottom: 48 }}>
+                                <div style={{ fontSize: 32, marginBottom: 12 }}>🔒</div>
+                                <h3 style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 500 }}>交易已锁定</h3>
+                                <p style={{ margin: "0 0 20px", fontSize: 11, color: "var(--text-muted)" }}>输入密码以激活交易功能</p>
                                 <input
                                     type="password"
                                     value={password}
                                     onChange={(e) => { setPassword(e.target.value); setPwError(""); }}
                                     onKeyDown={(e) => {
-                                        if (e.key === "Enter" && password) {
-                                            setUnlocked(true);
-                                            setPwError("");
-                                        }
+                                        if (e.key === "Enter" && password) { setUnlocked(true); setPwError(""); }
                                     }}
                                     placeholder="交易密码"
-                                    className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-center
-                                       focus:border-[var(--accent-blue)] focus:outline-none mb-3"
+                                    className="input"
+                                    style={{ textAlign: "center", marginBottom: 10 }}
                                 />
                                 <button
-                                    onClick={() => {
-                                        if (password) {
-                                            setUnlocked(true);
-                                            setPwError("");
-                                        } else {
-                                            setPwError("请输入密码");
-                                        }
-                                    }}
-                                    className="w-full py-2 bg-[var(--accent-blue)] text-white text-sm rounded-lg hover:bg-[var(--accent-blue)]/80 transition-colors"
+                                    onClick={() => { if (password) { setUnlocked(true); setPwError(""); } else { setPwError("请输入密码"); } }}
+                                    className="btn btn-blue"
+                                    style={{ width: "100%", padding: "8px 0" }}
                                 >
                                     解锁
                                 </button>
-                                {pwError && (
-                                    <p className="text-xs text-red-400 mt-2">{pwError}</p>
-                                )}
+                                {pwError && <p style={{ fontSize: 11, color: "var(--accent-red)", marginTop: 8 }}>{pwError}</p>}
                             </div>
                         ) : (
                             /* Order form */
                             <>
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-sm font-medium">手动下单</h3>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                                    <h3 style={{ margin: 0, fontSize: 13, fontWeight: 500 }}>手动下单</h3>
                                     <button
                                         onClick={() => { setUnlocked(false); setPassword(""); }}
-                                        className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-                                        title="锁定交易"
+                                        style={{ fontSize: 11, color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
                                     >
                                         🔓 锁定
                                     </button>
                                 </div>
 
-                                {/* Active symbol display */}
-                                <div className="mb-4 p-2 bg-[var(--bg-card)] rounded-lg border border-[var(--border)] text-center">
-                                    <span className="text-lg font-bold">{symbol}</span>
+                                {/* Symbol display */}
+                                <div style={{ marginBottom: 12, padding: "6px 10px", background: "var(--bg-card-solid)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", textAlign: "center" }}>
+                                    <span style={{ fontSize: 15, fontWeight: 700 }}>{symbol}</span>
                                     {ticker && (
-                                        <span className="ml-2 text-sm font-mono text-[var(--text-secondary)]">
+                                        <span className="font-mono" style={{ marginLeft: 8, fontSize: 12, color: "var(--text-secondary)" }}>
                                             ${ticker.toFixed(ticker >= 100 ? 2 : 4)}
                                         </span>
                                     )}
                                 </div>
 
                                 {/* Side selector */}
-                                <div className="flex gap-1 mb-4">
+                                <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
                                     <button
                                         onClick={() => setSide("BUY")}
-                                        className={`flex-1 py-2 text-sm rounded-lg font-medium transition-colors ${side === "BUY"
-                                            ? "bg-green-500 text-white"
-                                            : "bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                                            }`}
+                                        style={{
+                                            flex: 1, padding: "8px 0", fontSize: 12, borderRadius: "var(--radius-md)",
+                                            border: "none", cursor: "pointer", fontWeight: 500,
+                                            background: side === "BUY" ? "var(--accent-green)" : "var(--bg-card-solid)",
+                                            color: side === "BUY" ? "#18181B" : "var(--text-muted)",
+                                            transition: "all 0.15s",
+                                        }}
                                     >
                                         做多 LONG
                                     </button>
                                     <button
                                         onClick={() => setSide("SELL")}
-                                        className={`flex-1 py-2 text-sm rounded-lg font-medium transition-colors ${side === "SELL"
-                                            ? "bg-red-500 text-white"
-                                            : "bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                                            }`}
+                                        style={{
+                                            flex: 1, padding: "8px 0", fontSize: 12, borderRadius: "var(--radius-md)",
+                                            border: "none", cursor: "pointer", fontWeight: 500,
+                                            background: side === "SELL" ? "var(--accent-red)" : "var(--bg-card-solid)",
+                                            color: side === "SELL" ? "#18181B" : "var(--text-muted)",
+                                            transition: "all 0.15s",
+                                        }}
                                     >
                                         做空 SHORT
                                     </button>
                                 </div>
 
                                 {/* Order type */}
-                                <div className="flex gap-1 mb-4">
+                                <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
                                     {(["MARKET", "LIMIT"] as const).map((t) => (
-                                        <button
-                                            key={t}
-                                            onClick={() => setOrderType(t)}
-                                            className={`flex-1 py-1.5 text-xs rounded transition-colors ${orderType === t
-                                                ? "bg-[var(--accent-blue)]/20 text-[var(--accent-blue)]"
-                                                : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
-                                                }`}
-                                        >
-                                            {t}
-                                        </button>
+                                        <button key={t} onClick={() => setOrderType(t)} style={tabBtn(orderType === t)}>{t}</button>
                                     ))}
                                 </div>
 
-                                {/* Price (LIMIT only) */}
+                                {/* Price (LIMIT) */}
                                 {orderType === "LIMIT" && (
-                                    <div className="mb-3">
-                                        <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                            价格
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={price}
-                                            onChange={(e) => setPrice(e.target.value)}
-                                            placeholder={ticker ? ticker.toString() : "价格"}
-                                            className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm
-                                     focus:border-[var(--accent-blue)] focus:outline-none"
-                                        />
+                                    <div style={{ marginBottom: 10 }}>
+                                        <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>价格</label>
+                                        <input type="number" value={price} onChange={(e) => setPrice(e.target.value)}
+                                            placeholder={ticker ? ticker.toString() : "价格"} className="input" />
                                     </div>
                                 )}
 
-                                {/* Quantity mode toggle */}
-                                <div className="flex gap-1 mb-3">
-                                    <button
-                                        onClick={() => setQtyMode("margin")}
-                                        className={`flex-1 py-1 text-xs rounded transition-colors ${qtyMode === "margin"
-                                            ? "bg-[var(--accent-blue)]/20 text-[var(--accent-blue)]"
-                                            : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
-                                            }`}
-                                    >
-                                        保证金
-                                    </button>
-                                    <button
-                                        onClick={() => setQtyMode("quantity")}
-                                        className={`flex-1 py-1 text-xs rounded transition-colors ${qtyMode === "quantity"
-                                            ? "bg-[var(--accent-blue)]/20 text-[var(--accent-blue)]"
-                                            : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
-                                            }`}
-                                    >
-                                        数量
-                                    </button>
+                                {/* Qty mode toggle */}
+                                <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+                                    <button onClick={() => setQtyMode("margin")} style={tabBtn(qtyMode === "margin")}>保证金</button>
+                                    <button onClick={() => setQtyMode("quantity")} style={tabBtn(qtyMode === "quantity")}>数量</button>
                                 </div>
 
-                                {/* Margin / Quantity input */}
-                                {qtyMode === "margin" ? (
-                                    <div className="mb-3">
-                                        <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                            保证金 (USDT)
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={margin}
-                                            onChange={(e) => setMargin(e.target.value)}
-                                            className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm
-                                       focus:border-[var(--accent-blue)] focus:outline-none"
-                                        />
-                                    </div>
-                                ) : (
-                                    <div className="mb-3">
-                                        <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                            数量
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={quantity}
-                                            onChange={(e) => setQuantity(e.target.value)}
-                                            placeholder="合约数量"
-                                            className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm
-                                       focus:border-[var(--accent-blue)] focus:outline-none"
-                                        />
-                                    </div>
-                                )}
+                                {/* Margin / Quantity */}
+                                <div style={{ marginBottom: 10 }}>
+                                    <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                        {qtyMode === "margin" ? "保证金 (USDT)" : "数量"}
+                                    </label>
+                                    {qtyMode === "margin" ? (
+                                        <input type="number" value={margin} onChange={(e) => setMargin(e.target.value)} className="input" />
+                                    ) : (
+                                        <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="合约数量" className="input" />
+                                    )}
+                                </div>
 
                                 {/* Leverage */}
-                                <div className="mb-3">
-                                    <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                        杠杆
-                                    </label>
-                                    <div className="flex gap-1">
+                                <div style={{ marginBottom: 10 }}>
+                                    <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>杠杆</label>
+                                    <div style={{ display: "flex", gap: 4 }}>
                                         {["1", "2", "3", "5", "10"].map((l) => (
-                                            <button
-                                                key={l}
-                                                onClick={() => setLeverage(l)}
-                                                className={`flex-1 py-1.5 text-xs rounded transition-colors ${leverage === l
-                                                    ? "bg-[var(--accent-blue)] text-white"
-                                                    : "bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
-                                                    }`}
-                                            >
-                                                {l}x
-                                            </button>
+                                            <button key={l} onClick={() => setLeverage(l)} style={levBtn(leverage === l)}>{l}x</button>
                                         ))}
                                     </div>
                                 </div>
 
                                 {/* TP/SL */}
-                                <div className="grid grid-cols-2 gap-2 mb-4">
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
                                     <div>
-                                        <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                            止盈 %
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={tpPct}
-                                            onChange={(e) => setTpPct(e.target.value)}
-                                            placeholder="例: 33"
-                                            className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm
-                                     focus:border-[var(--accent-blue)] focus:outline-none"
-                                        />
+                                        <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>止盈 %</label>
+                                        <input type="number" value={tpPct} onChange={(e) => setTpPct(e.target.value)} placeholder="例: 33" className="input" />
                                     </div>
                                     <div>
-                                        <label className="text-xs text-[var(--text-muted)] block mb-1">
-                                            止损 %
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={slPct}
-                                            onChange={(e) => setSlPct(e.target.value)}
-                                            placeholder="例: 18"
-                                            className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm
-                                     focus:border-[var(--accent-blue)] focus:outline-none"
-                                        />
+                                        <label style={{ fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>止损 %</label>
+                                        <input type="number" value={slPct} onChange={(e) => setSlPct(e.target.value)} placeholder="例: 18" className="input" />
                                     </div>
                                 </div>
 
@@ -466,24 +396,19 @@ export default function TradingPage() {
                                 <button
                                     onClick={handleSubmit}
                                     disabled={submitting || (qtyMode === "margin" ? !margin : !quantity)}
-                                    className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${side === "SELL"
-                                        ? "bg-red-500 hover:bg-red-600 text-white"
-                                        : "bg-green-500 hover:bg-green-600 text-white"
-                                        }`}
+                                    className={`btn ${side === "SELL" ? "btn-red" : "btn-green"}`}
+                                    style={{ width: "100%", padding: "10px 0", fontSize: 13 }}
                                 >
-                                    {submitting
-                                        ? "下单中..."
-                                        : `${side === "SELL" ? "做空" : "做多"} ${symbol}`}
+                                    {submitting ? "下单中..." : `${side === "SELL" ? "做空" : "做多"} ${symbol}`}
                                 </button>
 
                                 {/* Result */}
                                 {result && (
-                                    <p
-                                        className={`mt-3 text-xs p-2 rounded ${result.startsWith("✅")
-                                            ? "bg-green-500/10 text-green-400"
-                                            : "bg-red-500/10 text-red-400"
-                                            }`}
-                                    >
+                                    <p style={{
+                                        marginTop: 10, fontSize: 11, padding: "6px 10px", borderRadius: 4,
+                                        background: result.startsWith("✅") ? "rgba(52,211,153,0.1)" : "rgba(248,113,113,0.1)",
+                                        color: result.startsWith("✅") ? "var(--accent-green)" : "var(--accent-red)",
+                                    }}>
                                         {result}
                                     </p>
                                 )}

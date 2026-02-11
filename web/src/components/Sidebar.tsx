@@ -4,55 +4,94 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
-    { href: "/", icon: "📊", label: "总览" },
-    { href: "/positions", icon: "📌", label: "持仓" },
-    { href: "/trades", icon: "📈", label: "交易" },
-    { href: "/trading", icon: "🔄", label: "手动" },
-    { href: "/signals", icon: "📡", label: "信号" },
+    { href: "/", label: "总览", icon: "◈" },
+    { href: "/positions", label: "持仓", icon: "◎" },
+    { href: "/trades", label: "交易", icon: "◇" },
+    { href: "/trading", label: "手动", icon: "▸" },
+    { href: "/signals", label: "信号", icon: "◆" },
 ];
 
 export default function Sidebar() {
     const pathname = usePathname();
 
     return (
-        <aside className="fixed top-0 left-0 h-screen flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)]"
-            style={{ width: "var(--sidebar-width)" }}>
+        <aside
+            style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                height: "100vh",
+                width: "var(--sidebar-width)",
+                display: "flex",
+                flexDirection: "column",
+                background: "var(--bg-secondary)",
+                borderRight: "1px solid var(--border)",
+                zIndex: 50,
+            }}
+        >
             {/* Logo */}
-            <div className="px-5 py-5 border-b border-[var(--border)]">
-                <h1 className="text-lg font-bold tracking-tight">
-                    <span className="text-[var(--accent-blue)]">Duo</span>
-                    <span className="text-[var(--text-secondary)]">Live</span>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", height: 56, display: "flex", alignItems: "center" }}>
+                <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: "-0.03em" }}>
+                    <span style={{ color: "var(--text-primary)" }}>Duo</span>
+                    <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>Live</span>
                 </h1>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5">Trading Dashboard</p>
+            </div>
+
+            {/* Nav section label */}
+            <div style={{ padding: "16px 20px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
+                交易面板
             </div>
 
             {/* Navigation */}
-            <nav className="flex-1 py-3">
+            <nav style={{ flex: 1, padding: "0 8px" }}>
                 {NAV_ITEMS.map((item) => {
                     const active = pathname === item.href;
                     return (
                         <Link
                             key={item.href}
                             href={item.href}
-                            className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150
-                ${active
-                                    ? "bg-[var(--accent-blue)]/10 text-[var(--accent-blue)] border-r-2 border-[var(--accent-blue)] font-medium"
-                                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                                }`}
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                                padding: "8px 12px",
+                                margin: "2px 0",
+                                fontSize: 13,
+                                color: active ? "var(--text-primary)" : "var(--text-muted)",
+                                fontWeight: active ? 500 : 400,
+                                textDecoration: "none",
+                                borderRadius: "var(--radius-lg)",
+                                background: active ? "var(--bg-hover)" : "transparent",
+                                transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => {
+                                if (!active) {
+                                    e.currentTarget.style.background = "var(--bg-hover)";
+                                    e.currentTarget.style.color = "var(--text-secondary)";
+                                }
+                            }}
+                            onMouseLeave={(e) => {
+                                if (!active) {
+                                    e.currentTarget.style.background = "transparent";
+                                    e.currentTarget.style.color = "var(--text-muted)";
+                                }
+                            }}
                         >
-                            <span className="text-base">{item.icon}</span>
-                            <span>{item.label}</span>
+                            <span style={{ fontSize: 12, opacity: active ? 1 : 0.6 }}>{item.icon}</span>
+                            {item.label}
                         </Link>
                     );
                 })}
             </nav>
 
             {/* Footer */}
-            <div className="px-5 py-4 border-t border-[var(--border)]">
-                <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-[var(--accent-green)] animate-pulse" />
-                    <span className="text-xs text-[var(--text-muted)]">System Online</span>
-                </div>
+            <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{
+                    width: 7, height: 7, borderRadius: "50%",
+                    background: "var(--accent-green)",
+                    boxShadow: "0 0 6px rgba(52, 211, 153, 0.4)",
+                }} />
+                <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>运行中</span>
             </div>
         </aside>
     );

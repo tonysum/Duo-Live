@@ -3,30 +3,6 @@
 import { useEffect, useState } from "react";
 import { api, Status, Position, LiveTrade } from "@/lib/api";
 
-function StatCard({
-  title,
-  value,
-  subtitle,
-  color = "text-[var(--text-primary)]",
-}: {
-  title: string;
-  value: string;
-  subtitle?: string;
-  color?: string;
-}) {
-  return (
-    <div className="bg-[var(--bg-card)] rounded-xl p-5 border border-[var(--border)] hover:border-[var(--accent-blue)]/30 transition-colors">
-      <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">
-        {title}
-      </p>
-      <p className={`text-2xl font-bold ${color}`}>{value}</p>
-      {subtitle && (
-        <p className="text-xs text-[var(--text-secondary)] mt-1">{subtitle}</p>
-      )}
-    </div>
-  );
-}
-
 export default function DashboardPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -57,174 +33,135 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">
-          仪表盘
-          <span className="ml-3 text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">
-            🔴 实盘
-          </span>
-        </h2>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>总览</h2>
+          <span className="badge badge-reject" style={{ fontSize: 10 }}>实盘</span>
+        </div>
         {error && (
-          <span className="text-xs text-red-400 bg-red-400/10 px-3 py-1 rounded">
-            ⚠️ {error}
+          <span style={{ fontSize: 11, color: "var(--accent-red)", background: "rgba(248,113,113,0.1)", padding: "4px 10px", borderRadius: 9999 }}>
+            ⚠ {error}
           </span>
         )}
       </div>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard
-          title="账户余额"
-          value={status ? `$${status.total_balance.toFixed(2)}` : "—"}
+      {/* Stat Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: "var(--border)", borderRadius: "var(--radius-xl)", overflow: "hidden", marginBottom: 20 }}>
+        <StatCell label="账户余额" value={status ? `$${status.total_balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <StatCell label="可用余额" value={status ? `$${status.available_balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"} />
+        <StatCell
+          label="未实现盈亏"
+          value={status ? `${status.unrealized_pnl >= 0 ? "+" : ""}${status.unrealized_pnl.toFixed(2)}` : "—"}
+          valueColor={status ? (status.unrealized_pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)") : undefined}
         />
-        <StatCard
-          title="可用余额"
-          value={status ? `$${status.available_balance.toFixed(2)}` : "—"}
-        />
-        <StatCard
-          title="未实现盈亏"
-          value={status ? `$${status.unrealized_pnl.toFixed(2)}` : "—"}
-          color={
-            status && status.unrealized_pnl >= 0
-              ? "text-[var(--accent-green)]"
-              : "text-[var(--accent-red)]"
-          }
-        />
-        <StatCard
-          title="今日盈亏"
-          value={status ? `$${status.daily_pnl.toFixed(2)}` : "—"}
-          color={
-            status && status.daily_pnl >= 0
-              ? "text-[var(--accent-green)]"
-              : "text-[var(--accent-red)]"
-          }
-          subtitle={`持仓 ${status?.open_positions || 0} 笔`}
+        <StatCell
+          label="今日盈亏"
+          value={status ? `${status.daily_pnl >= 0 ? "+" : ""}${status.daily_pnl.toFixed(2)}` : "—"}
+          valueColor={status ? (status.daily_pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)") : undefined}
+          sub={`持仓 ${status?.open_positions || 0} 笔`}
         />
       </div>
 
-      {/* Positions */}
-      {positions.length > 0 && (
-        <div className="bg-[var(--bg-card)] rounded-xl p-5 border border-[var(--border)] mb-6">
-          <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">
-            当前持仓
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+      {/* 2-column grid for positions & trades */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        {/* Positions */}
+        <div className="card">
+          <div className="card-header">
+            <span>当前持仓</span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 400 }}>{positions.length} 笔</span>
+          </div>
+          {positions.length === 0 ? (
+            <div style={{ padding: "40px 0", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>暂无持仓</div>
+          ) : (
+            <table className="tbl">
               <thead>
-                <tr className="text-[var(--text-muted)] text-xs border-b border-[var(--border)]">
-                  <th className="text-left py-2 pr-4">币种</th>
-                  <th className="text-left py-2 pr-4">方向</th>
-                  <th className="text-right py-2 pr-4">数量</th>
-                  <th className="text-right py-2 pr-4">入场价</th>
-                  <th className="text-right py-2 pr-4">杠杆</th>
-                  <th className="text-right py-2 pr-4">未实现盈亏</th>
+                <tr>
+                  <th>币种</th>
+                  <th>方向</th>
+                  <th className="right">数量</th>
+                  <th className="right">入场价</th>
+                  <th className="right">杠杆</th>
+                  <th className="right">未实现盈亏</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.map((p, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-hover)] transition-colors"
-                  >
-                    <td className="py-2 pr-4 font-medium">{p.symbol}</td>
-                    <td className="py-2 pr-4">
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded ${p.side === "SHORT"
-                            ? "bg-red-500/20 text-red-400"
-                            : "bg-green-500/20 text-green-400"
-                          }`}
-                      >
-                        {p.side}
-                      </span>
+                  <tr key={i}>
+                    <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>{p.symbol}</td>
+                    <td>
+                      <span className={`badge ${p.side === "SHORT" ? "badge-short" : "badge-long"}`}>{p.side}</span>
                     </td>
-                    <td className="py-2 pr-4 text-right font-mono text-xs">
-                      {p.quantity}
-                    </td>
-                    <td className="py-2 pr-4 text-right font-mono text-xs">
-                      {p.entry_price.toFixed(4)}
-                    </td>
-                    <td className="py-2 pr-4 text-right font-mono text-xs">
-                      {p.leverage}x
-                    </td>
-                    <td
-                      className={`py-2 pr-4 text-right font-mono text-xs ${p.unrealized_pnl >= 0
-                          ? "text-[var(--accent-green)]"
-                          : "text-[var(--accent-red)]"
-                        }`}
-                    >
-                      {p.unrealized_pnl >= 0 ? "+" : ""}
-                      {p.unrealized_pnl.toFixed(2)}
+                    <td className="right font-mono">{p.quantity}</td>
+                    <td className="right font-mono">{p.entry_price.toFixed(4)}</td>
+                    <td className="right font-mono">{p.leverage}×</td>
+                    <td className={`right font-mono ${p.unrealized_pnl >= 0 ? "pnl-positive" : "pnl-negative"}`}>
+                      {p.unrealized_pnl >= 0 ? "+" : ""}{p.unrealized_pnl.toFixed(2)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          )}
         </div>
-      )}
 
-      {/* Recent Trades */}
-      <div className="bg-[var(--bg-card)] rounded-xl p-5 border border-[var(--border)]">
-        <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">
-          最近交易
-        </h3>
-        {trades.length === 0 ? (
-          <p className="text-[var(--text-muted)] text-sm">暂无交易记录</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+        {/* Recent Trades */}
+        <div className="card">
+          <div className="card-header">
+            <span>最近交易</span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 400 }}>{trades.length} 笔</span>
+          </div>
+          {trades.length === 0 ? (
+            <div style={{ padding: "40px 0", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>暂无交易记录</div>
+          ) : (
+            <table className="tbl">
               <thead>
-                <tr className="text-[var(--text-muted)] text-xs border-b border-[var(--border)]">
-                  <th className="text-left py-2 pr-4">币种</th>
-                  <th className="text-left py-2 pr-4">方向</th>
-                  <th className="text-right py-2 pr-4">入场价</th>
-                  <th className="text-right py-2 pr-4">出场价</th>
-                  <th className="text-right py-2 pr-4">盈亏</th>
-                  <th className="text-left py-2">平仓时间</th>
+                <tr>
+                  <th>币种</th>
+                  <th>方向</th>
+                  <th className="right">入场价</th>
+                  <th className="right">出场价</th>
+                  <th className="right">盈亏</th>
+                  <th>平仓时间</th>
                 </tr>
               </thead>
               <tbody>
                 {trades.map((t, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-hover)] transition-colors"
-                  >
-                    <td className="py-2 pr-4 font-medium">{t.symbol}</td>
-                    <td className="py-2 pr-4">
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded ${t.side === "SHORT"
-                            ? "bg-red-500/20 text-red-400"
-                            : "bg-green-500/20 text-green-400"
-                          }`}
-                      >
-                        {t.side}
-                      </span>
+                  <tr key={i}>
+                    <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>{t.symbol}</td>
+                    <td>
+                      <span className={`badge ${t.side === "SHORT" ? "badge-short" : "badge-long"}`}>{t.side}</span>
                     </td>
-                    <td className="py-2 pr-4 text-right font-mono text-xs">
-                      {t.entry_price}
+                    <td className="right font-mono">{t.entry_price}</td>
+                    <td className="right font-mono">{t.exit_price}</td>
+                    <td className={`right font-mono ${t.pnl_usdt >= 0 ? "pnl-positive" : "pnl-negative"}`}>
+                      {t.pnl_usdt >= 0 ? "+" : ""}{t.pnl_usdt.toFixed(2)}
                     </td>
-                    <td className="py-2 pr-4 text-right font-mono text-xs">
-                      {t.exit_price}
-                    </td>
-                    <td
-                      className={`py-2 pr-4 text-right font-mono text-xs ${t.pnl_usdt >= 0
-                          ? "text-[var(--accent-green)]"
-                          : "text-[var(--accent-red)]"
-                        }`}
-                    >
-                      {t.pnl_usdt >= 0 ? "+" : ""}
-                      {t.pnl_usdt.toFixed(2)}
-                    </td>
-                    <td className="py-2 text-xs text-[var(--text-muted)]">
+                    <td style={{ fontSize: 11, color: "var(--text-muted)" }}>
                       {t.exit_time ? t.exit_time.slice(0, 19).replace("T", " ") : ""}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function StatCell({ label, value, valueColor, sub }: {
+  label: string;
+  value: string;
+  valueColor?: string;
+  sub?: string;
+}) {
+  return (
+    <div className="stat-cell">
+      <div className="label">{label}</div>
+      <div className="value" style={valueColor ? { color: valueColor } : undefined}>{value}</div>
+      {sub && <div className="sub">{sub}</div>}
     </div>
   );
 }

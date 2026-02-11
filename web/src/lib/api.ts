@@ -131,6 +131,7 @@ export const api = {
     getPositions: () => get<Position[]>("/api/positions"),
     getTrades: (limit = 50) => get<LiveTrade[]>(`/api/trades?limit=${limit}`),
     getSignals: (limit = 100) => get<Signal[]>(`/api/signals?limit=${limit}`),
+    getTickers: () => get<Record<string, { price: number; change_pct: number }>>("/api/tickers"),
     getConfig: () => get<Config>("/api/config"),
     getKlines: (symbol: string, interval = "5m", limit = 300) =>
         get<Kline[]>(`/api/klines/${symbol}?interval=${interval}&limit=${limit}`),

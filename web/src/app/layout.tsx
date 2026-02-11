@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
+
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "DuoLive Trading Dashboard",
@@ -13,20 +19,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
-      <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html lang="zh-CN" className={inter.className}>
       <body className="antialiased">
         <Sidebar />
         <main
-          className="min-h-screen"
-          style={{ marginLeft: "var(--sidebar-width)" }}
+          style={{ marginLeft: "var(--sidebar-width)", minHeight: "100vh" }}
         >
-          <div className="p-6">{children}</div>
+          <div style={{ padding: 20 }}>{children}</div>
         </main>
       </body>
     </html>
