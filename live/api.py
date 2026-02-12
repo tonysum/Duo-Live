@@ -227,6 +227,16 @@ def create_app(trader) -> FastAPI:
         """List open positions from exchange."""
         try:
             all_pos = await trader.client.get_position_risk()
+
+            # Fetch per-position maintMargin from account endpoint
+            acct = await trader.client.get_account_info()
+            maint_map: dict[str, float] = {}
+            for ap in acct.get("positions", []):
+                sym = ap.get("symbol", "")
+                mm = float(ap.get("maintMargin", "0"))
+                if mm > 0:
+                    maint_map[sym] = mm
+
             items = []
             for p in all_pos:
                 amt = float(p.position_amt)
@@ -235,12 +245,16 @@ def create_app(trader) -> FastAPI:
                 liq = float(p.liquidation_price)
                 margin = float(p.isolated_margin)
                 upnl = float(p.unrealized_profit)
-                # margin_ratio: how much of margin is used
-                # (margin + upnl) / margin — lower means closer to liquidation
-                if margin > 0:
-                    margin_ratio = round((margin + upnl) / margin * 100, 2)
+
+                # Binance margin ratio = maintMargin / marginBalance * 100%
+                # marginBalance = isolatedMargin (which includes wallet + upnl for isolated)
+                maint_margin = maint_map.get(p.symbol, 0)
+                margin_balance = margin  # isolatedMargin already includes unrealized PnL
+                if margin_balance > 0 and maint_margin > 0:
+                    margin_ratio = round(maint_margin / margin_balance * 100, 2)
                 else:
                     margin_ratio = 0
+
                 items.append(PositionItem(
                     symbol=p.symbol,
                     side="LONG" if amt > 0 else "SHORT",
@@ -252,6 +266,52 @@ def create_app(trader) -> FastAPI:
                     margin=margin,
                     margin_ratio=margin_ratio,
                 ))
+            return items
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
+
+    @app.get("/api/orders")
+    async def get_orders():
+        """List all open orders (regular + algo/conditional)."""
+        try:
+            # Regular open orders (LIMIT etc.)
+            regular = await trader.client.get_open_orders()
+            # Algo/conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET)
+            algo = await trader.client.get_open_algo_orders()
+
+            items = []
+            for o in regular:
+                items.append({
+                    "id": o.order_id,
+                    "symbol": o.symbol,
+                    "type": o.orig_type or o.type,
+                    "side": o.side,
+                    "position_side": o.position_side,
+                    "price": float(o.price) if o.price else 0,
+                    "stop_price": float(o.stop_price) if o.stop_price else 0,
+                    "quantity": float(o.orig_qty),
+                    "filled_qty": float(o.executed_qty),
+                    "status": o.status,
+                    "time": o.update_time,
+                    "is_algo": False,
+                })
+            for a in algo:
+                items.append({
+                    "id": a.algo_id,
+                    "symbol": a.symbol,
+                    "type": a.order_type,
+                    "side": a.side,
+                    "position_side": a.position_side,
+                    "price": 0,
+                    "stop_price": float(a.trigger_price),
+                    "quantity": float(a.quantity),
+                    "filled_qty": 0,
+                    "status": a.algo_status,
+                    "time": a.create_time,
+                    "is_algo": True,
+                })
+            # Sort by time descending
+            items.sort(key=lambda x: x["time"], reverse=True)
             return items
         except Exception as e:
             raise HTTPException(500, detail=str(e))

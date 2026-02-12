@@ -334,6 +334,15 @@ class BinanceFuturesClient:
             "unrealized_pnl": Decimal("0"),
         }
 
+    async def get_account_info(self) -> dict:
+        """Get full account info including per-position margins. GET /fapi/v2/account
+
+        Returns raw dict with keys including:
+          - totalMaintMargin, totalMarginBalance (account-level)
+          - positions: list of per-position dicts with maintMargin, initialMargin, etc.
+        """
+        return await self._request("GET", "/fapi/v2/account", signed=True)
+
     # ── WebSocket listenKey management ────────────────────────────────
 
     async def create_listen_key(self) -> str:

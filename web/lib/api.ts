@@ -89,6 +89,21 @@ export interface OrderRequest {
   trading_password?: string;
 }
 
+export interface OpenOrder {
+  id: number;
+  symbol: string;
+  type: string;
+  side: string;
+  position_side: string;
+  price: number;
+  stop_price: number;
+  quantity: number;
+  filled_qty: number;
+  status: string;
+  time: number;
+  is_algo: boolean;
+}
+
 // ── Fetch helpers ──────────────────────────────────────────────────
 async function fetchWithRetry(
   url: string,
@@ -136,6 +151,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 export const api = {
   getStatus: () => get<Status>("/api/status"),
   getPositions: () => get<Position[]>("/api/positions"),
+  getOrders: () => get<OpenOrder[]>("/api/orders"),
   getTrades: (limit = 50) => get<LiveTrade[]>(`/api/trades?limit=${limit}`),
   getSignals: (limit = 100) => get<Signal[]>(`/api/signals?limit=${limit}`),
   getTickers: () =>

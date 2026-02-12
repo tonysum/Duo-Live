@@ -583,7 +583,8 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print()
         print("  🚀 启动中...")
         print()
-
+        
+        #更换策略的入口
         trader = LiveTrader(config=config)
         trader.auto_trade_enabled = auto_trade
         asyncio.run(trader.start())

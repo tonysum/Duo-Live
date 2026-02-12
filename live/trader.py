@@ -21,13 +21,13 @@ from rich.console import Console
 
 from .models import utc_now
 from .live_config import LiveTradingConfig
-from .live_scanner import LiveSurgeScanner
 from .live_executor import LiveOrderExecutor
 from .live_position_monitor import LivePositionMonitor
 from .store import TradeStore, SignalEvent
 from .binance_client import BinanceFuturesClient
 from .notifier import TelegramNotifier
 from .ws_stream import BinanceUserStream
+from .strategy import Strategy, SurgeShortStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class LiveTrader:
         self,
         config: Optional[LiveTradingConfig] = None,
         verbose: bool = True,
+        strategy: Optional[Strategy] = None,
     ):
         self.config = config or LiveTradingConfig()
         self.verbose = verbose
@@ -50,6 +51,9 @@ class LiveTrader:
         self._running = False
         self.auto_trade_enabled = False  # 自动交易开关 (默认关闭)
         self._main_task: Optional[asyncio.Task] = None
+
+        # Pluggable strategy (defaults to SurgeShortStrategy)
+        self.strategy = strategy or SurgeShortStrategy()
 
         # Shared Binance client
         self.client = BinanceFuturesClient()
@@ -60,8 +64,8 @@ class LiveTrader:
         # Persistence (signal events + live trades)
         self.store = TradeStore(self.config.db_path)
 
-        # Scanner
-        self.scanner = LiveSurgeScanner(
+        # Scanner — delegated to strategy
+        self.scanner = self.strategy.create_scanner(
             config=self.config,
             signal_queue=self.signal_queue,
             client=self.client,
@@ -77,12 +81,6 @@ class LiveTrader:
             leverage=self.config.leverage,
         )
 
-        # Risk filters (uses same Binance client)
-        self.risk_filters: Optional[object] = None
-        if self.config.enable_risk_filters:
-            from .risk_filters import RiskFilters
-            self.risk_filters = RiskFilters(self.client)
-
         # Live position monitor
         self.live_monitor = LivePositionMonitor(
             client=self.client,
@@ -90,6 +88,7 @@ class LiveTrader:
             config=self.config,
             notifier=self.notifier,
             store=self.store,
+            strategy=self.strategy,
         )
 
         # WebSocket user data stream (real-time fills)
@@ -308,31 +307,28 @@ class LiveTrader:
 
         signal_price = Decimal(str(signal.price))
 
-        # ── Risk filters ───────────────────────────────────────
-        if self.risk_filters:
-            try:
-                result = await self.risk_filters.check_all(
-                    symbol, now, entry_price, signal_price
-                )
-                if not result.should_trade:
-                    import json as _json
-                    self.store.save_signal_event(SignalEvent(
-                        timestamp=now.isoformat(),
-                        symbol=symbol,
-                        surge_ratio=signal.surge_ratio,
-                        price=str(entry_price),
-                        accepted=False,
-                        reject_reason=result.reason,
-                        risk_metrics_json=_json.dumps(
-                            result.metrics or {}, default=str
-                        ),
-                    ))
-                    self.console.print(
-                        f"  [yellow]FILTERED[/yellow] {symbol}: {result.reason}"
-                    )
-                    return False
-            except Exception as e:
-                logger.warning("Risk filter error for %s (fail-open): %s", symbol, e)
+        # ── Strategy entry filter (risk filters + entry params) ─
+        decision = await self.strategy.filter_entry(
+            client=self.client,
+            signal=signal,
+            entry_price=entry_price,
+            signal_price=signal_price,
+            now=now,
+            config=self.config,
+        )
+        if not decision.should_enter:
+            self.store.save_signal_event(SignalEvent(
+                timestamp=now.isoformat(),
+                symbol=symbol,
+                surge_ratio=signal.surge_ratio,
+                price=str(entry_price),
+                accepted=False,
+                reject_reason=decision.reject_reason,
+            ))
+            self.console.print(
+                f"  [yellow]FILTERED[/yellow] {symbol}: {decision.reject_reason}"
+            )
+            return False
 
         # ── Daily loss limit check ───────────────────────────────
         if self.config.daily_loss_limit_usdt > 0:
@@ -385,9 +381,9 @@ class LiveTrader:
                 symbol=symbol,
                 price=entry_price,
                 quantity=quantity,
-                side="SHORT",
-                tp_pct=self.config.strong_tp_pct,
-                sl_pct=self.config.stop_loss_pct,
+                side=decision.side,
+                tp_pct=decision.tp_pct,
+                sl_pct=decision.sl_pct,
             )
             if order_result.get("entry_order"):
                 self.store.save_signal_event(SignalEvent(
@@ -397,8 +393,9 @@ class LiveTrader:
                     price=str(entry_price),
                     accepted=True,
                 ))
+                entry_side = "SHORT" if decision.side == "SELL" else "LONG"
                 self.console.print(
-                    f"  [green]🟢 LIVE ENTRY[/green] {symbol} SHORT @ {entry_price} "
+                    f"  [green]🟢 LIVE ENTRY[/green] {symbol} {entry_side} @ {entry_price} "
                     f"(qty: {quantity:.4f})"
                 )
                 # Track position in live monitor
@@ -406,14 +403,14 @@ class LiveTrader:
                     self.live_monitor.track(
                         symbol=symbol,
                         entry_order_id=order_result["entry_order"].order_id,
-                        side="SHORT",
+                        side=entry_side,
                         quantity=str(quantity),
                         deferred_tp_sl=order_result["deferred_tp_sl"],
                     )
                 # Telegram notification
                 if self.notifier:
                     await self.notifier.notify_entry_placed(
-                        symbol=symbol, side="SHORT",
+                        symbol=symbol, side=entry_side,
                         price=str(entry_price), qty=f"{quantity:.4f}",
                         margin=str(margin),
                         order_id=str(order_result["entry_order"].order_id),

@@ -26,6 +26,11 @@ from .live_config import LiveTradingConfig
 
 logger = logging.getLogger(__name__)
 
+# TYPE_CHECKING imports to avoid circular dependency
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .strategy import Strategy
+
 
 @dataclass
 class TrackedPosition:
@@ -73,6 +78,7 @@ class LivePositionMonitor:
         poll_interval: int = 30,
         notifier=None,  # TelegramNotifier (optional)
         store=None,     # TradeStore (optional, for live trade recording)
+        strategy: "Strategy | None" = None,
     ):
         self.client = client
         self.executor = executor
@@ -80,6 +86,7 @@ class LivePositionMonitor:
         self.poll_interval = poll_interval
         self.notifier = notifier
         self.store = store
+        self.strategy = strategy
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
 
@@ -262,8 +269,46 @@ class LivePositionMonitor:
         if not pos.entry_filled or not pos.tp_sl_placed:
             return
 
-        # ── 1.5. Dynamic TP evaluation (2h / 12h) ────────────────────
-        await self._update_dynamic_tp(pos, now)
+        # ── 1.5. Strategy-based position evaluation ─────────────
+        if self.strategy:
+            from .strategy import PositionAction
+            action: PositionAction = await self.strategy.evaluate_position(
+                client=self.client,
+                pos=pos,
+                config=self.config,
+                now=now,
+            )
+            if action.action == "close":
+                logger.warning(
+                    "⏰ 策略平仓: %s — %s", pos.symbol, action.reason,
+                )
+                if self.notifier:
+                    if action.reason == "max_hold_time":
+                        await self.notifier.notify_timeout_close(
+                            pos.symbol, self.config.max_hold_hours,
+                        )
+                    else:
+                        await self.notifier.send(
+                            f"⚠️ <b>策略平仓</b>\n  {pos.symbol}: {action.reason}"
+                        )
+                self._record_live_trade(
+                    pos, event=action.reason or "strategy_close",
+                    entry_price=str(pos.entry_price or ""),
+                )
+                await self._force_close(pos)
+                return
+
+            elif action.action == "adjust_tp":
+                pos.current_tp_pct = action.new_tp_pct
+                if action.new_strength:
+                    pos.strength = action.new_strength
+                await self._replace_tp_order(pos)
+                return
+
+            # action == "hold" → fall through
+        else:
+            # Legacy fallback (no strategy injected)
+            await self._update_dynamic_tp(pos, now)
 
         # ── 2. Check TP/SL algo order status ──────────────────────────
         try:
@@ -318,8 +363,8 @@ class LivePositionMonitor:
         except Exception as e:
             logger.debug("Algo order check failed: %s", e)
 
-        # ── 3. Max hold time enforcement ──────────────────────────────
-        if not pos.closed and pos.entry_filled:
+        # ── 3. Max hold time enforcement (legacy fallback, strategy handles this) ──
+        if not pos.closed and pos.entry_filled and not self.strategy:
             hold_hours = (now - pos.created_at).total_seconds() / 3600
             if hold_hours >= self.config.max_hold_hours:
                 logger.warning(
