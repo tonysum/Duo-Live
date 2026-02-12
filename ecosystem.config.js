@@ -21,9 +21,12 @@ module.exports = {
         },
         {
             name: "duo-live-frontend",
-            script: "node_modules/.bin/next",
-            args: "start -H 0.0.0.0 -p 3000",
+            script: ".next/standalone/server.js",
             cwd: "./web",
+            env: {
+                PORT: 3000,
+                HOSTNAME: "0.0.0.0",
+            },
             restart_delay: 3000,
             autorestart: true,
             log_date_format: "YYYY-MM-DD HH:mm:ss",

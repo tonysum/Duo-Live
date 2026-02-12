@@ -19,15 +19,18 @@ echo ""
 
 # 2. 安装 Python 依赖 (如有变动)
 echo "📦 Step 2: 同步 Python 依赖..."
-uv sync --frozen 2>/dev/null || pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
 echo ""
 
-# 3. 构建前端
+# 3. 构建前端 (standalone 模式)
 echo "🔨 Step 3: 构建前端..."
 cd web
 rm -rf .next
 npm install --frozen-lockfile 2>/dev/null || npm install
 npm run build
+# standalone 模式需要手动拷贝 static 资源
+cp -r .next/static .next/standalone/.next/static
+[ -d public ] && cp -r public .next/standalone/public
 cd ..
 echo ""
 
