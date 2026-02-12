@@ -376,6 +376,20 @@ class BinanceFuturesClient:
         )
         return data
 
+    async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict:
+        """Set margin type for a symbol. POST /fapi/v1/marginType
+
+        Args:
+            symbol: e.g. "BTCUSDT"
+            margin_type: "ISOLATED" or "CROSSED"
+        """
+        data = await self._request(
+            "POST", "/fapi/v1/marginType",
+            {"symbol": symbol, "marginType": margin_type},
+            signed=True,
+        )
+        return data
+
     async def get_income_history(
         self,
         income_type: str | None = None,

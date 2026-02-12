@@ -100,6 +100,16 @@ class LiveOrderExecutor:
         price_prec, qty_prec = await self._get_precision(symbol)
         pos_side = await self._get_position_side(side)
 
+        # Set margin type to ISOLATED (限制单仓最大亏损)
+        try:
+            await self.client.set_margin_type(symbol, "ISOLATED")
+            logger.info("⚙️ 保证金模式已设为逐仓: %s", symbol)
+        except BinanceAPIError as e:
+            if e.code == -4046:
+                logger.debug("逐仓模式已设置, 无需修改: %s", symbol)
+            else:
+                logger.warning("⚠️ 设置逐仓模式失败: %s", e)
+
         # Set leverage
         try:
             lev_resp = await self.client.set_leverage(symbol, self.leverage)
