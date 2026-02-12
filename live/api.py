@@ -204,9 +204,11 @@ def create_app(trader) -> FastAPI:
         """Account overview: balance, P&L, position count."""
         now = datetime.now(timezone.utc)
         try:
-            bal = await trader.client.get_account_balance()
-            daily_pnl = await trader.client.get_daily_realized_pnl()
-            all_pos = await trader.client.get_position_risk()
+            bal, daily_pnl, all_pos = await asyncio.gather(
+                trader.client.get_account_balance(),
+                trader.client.get_daily_realized_pnl(),
+                trader.client.get_position_risk(),
+            )
             open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
             return StatusResponse(
@@ -226,10 +228,11 @@ def create_app(trader) -> FastAPI:
     async def get_positions():
         """List open positions from exchange."""
         try:
-            all_pos = await trader.client.get_position_risk()
-
-            # Fetch per-position maintMargin from account endpoint
-            acct = await trader.client.get_account_info()
+            # Concurrent fetch — cuts latency in half
+            all_pos, acct = await asyncio.gather(
+                trader.client.get_position_risk(),
+                trader.client.get_account_info(),
+            )
             maint_map: dict[str, float] = {}
             for ap in acct.get("positions", []):
                 sym = ap.get("symbol", "")
@@ -274,10 +277,11 @@ def create_app(trader) -> FastAPI:
     async def get_orders():
         """List all open orders (regular + algo/conditional)."""
         try:
-            # Regular open orders (LIMIT etc.)
-            regular = await trader.client.get_open_orders()
-            # Algo/conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET)
-            algo = await trader.client.get_open_algo_orders()
+            # Concurrent fetch — cuts latency in half
+            regular, algo = await asyncio.gather(
+                trader.client.get_open_orders(),
+                trader.client.get_open_algo_orders(),
+            )
 
             items = []
             for o in regular:
