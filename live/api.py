@@ -360,7 +360,7 @@ def create_app(trader) -> FastAPI:
     @app.get("/api/klines/{symbol}", response_model=list[KlineItem])
     async def get_klines(
         symbol: str,
-        interval: str = Query("5m", regex="^(1m|3m|5m|15m|30m|1h|2h|4h|1d|1w|1M)$"),
+        interval: str = Query("5m", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|1d|1w|1M)$"),
         limit: int = Query(300, ge=1, le=1500),
     ):
         """Get candlestick data from Binance."""
