@@ -97,6 +97,7 @@ export default function TradingPage() {
         const dayA = a.timestamp.slice(0, 10)
         const dayB = b.timestamp.slice(0, 10)
         if (dayA !== dayB) return dayB.localeCompare(dayA)
+        if (a.accepted !== b.accepted) return a.accepted ? -1 : 1
         return b.surge_ratio - a.surge_ratio
       })
       const seen = new Set<string>()

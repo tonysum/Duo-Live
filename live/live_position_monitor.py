@@ -466,6 +466,8 @@ class LivePositionMonitor:
         if not pos.entry_price or not pos.tp_algo_id:
             return
 
+        old_tp_algo_id = pos.tp_algo_id
+
         # Cancel old TP
         try:
             await self.client.cancel_algo_order(pos.symbol, algo_id=pos.tp_algo_id)
@@ -473,6 +475,9 @@ class LivePositionMonitor:
         except Exception as e:
             logger.warning("撤销旧止盈单失败: %s", e)
             return
+
+        # Immediately clear stale algo ID so poll loop won't misdetect as triggered
+        pos.tp_algo_id = None
 
         # Calculate new TP price
         is_long = pos.side == "LONG"
@@ -483,8 +488,13 @@ class LivePositionMonitor:
         )
         new_tp_price = pos.entry_price * tp_mult
 
-        # Round to tick size (get from deferred params or use 2 decimal places)
-        new_tp_str = str(new_tp_price.quantize(Decimal("0.01")))
+        # Round to correct tick size via executor's precision helpers
+        try:
+            price_prec, _ = await self.executor._get_precision(pos.symbol)
+            new_tp_price = self.executor._round_price(new_tp_price, price_prec)
+        except Exception as e:
+            logger.warning("获取精度失败, 回退使用原始价格: %s", e)
+        new_tp_str = str(new_tp_price)
 
         # Place new TP
         close_side = "SELL" if is_long else "BUY"
@@ -519,7 +529,74 @@ class LivePositionMonitor:
                     f"  新止盈: {new_tp_str} ({pos.current_tp_pct}%)"
                 )
         except Exception as e:
-            logger.error("❌ 新止盈单失败 %s: %s", pos.symbol, e)
+            logger.error("❌ 新止盈单失败 %s: %s (尝试恢复旧止盈)", pos.symbol, e)
+            # Try to restore the old TP order to avoid leaving position unprotected
+            await self._restore_tp_order(pos, old_tp_algo_id)
+
+    async def _restore_tp_order(
+        self, pos: TrackedPosition, old_algo_id: int | None
+    ):
+        """Attempt to re-place a TP order after a failed replacement.
+
+        Uses the *original* TP percentage (strong_tp_pct from config) so we
+        don't lose all TP protection when the dynamic adjustment fails.
+        """
+        if not pos.entry_price:
+            return
+
+        is_long = pos.side == "LONG"
+        # Fall back to the original TP percentage from config
+        fallback_pct = self.config.strong_tp_pct
+        tp_mult = (
+            Decimal("1") + Decimal(str(fallback_pct)) / Decimal("100")
+            if is_long
+            else Decimal("1") - Decimal(str(fallback_pct)) / Decimal("100")
+        )
+        restore_price = pos.entry_price * tp_mult
+
+        try:
+            price_prec, _ = await self.executor._get_precision(pos.symbol)
+            restore_price = self.executor._round_price(restore_price, price_prec)
+        except Exception:
+            pass
+
+        close_side = "SELL" if is_long else "BUY"
+        try:
+            is_hedge = await self.client.get_position_mode()
+            ps = pos.side if is_hedge else "BOTH"
+
+            import uuid
+            order_prefix = uuid.uuid4().hex[:8]
+
+            tp_order = await self.client.place_algo_order(
+                symbol=pos.symbol,
+                side=close_side,
+                positionSide=ps,
+                type="TAKE_PROFIT_MARKET",
+                triggerPrice=str(restore_price),
+                quantity=pos.quantity,
+                reduceOnly="true",
+                priceProtect="true",
+                workingType="CONTRACT_PRICE",
+                clientAlgoId=f"tp_{order_prefix}",
+            )
+            pos.tp_algo_id = tp_order.algo_id
+            pos.current_tp_pct = fallback_pct
+            logger.info(
+                "🔄 恢复止盈单: %s TP=%s%% @ %s (algoId=%s)",
+                pos.symbol, fallback_pct, restore_price, tp_order.algo_id,
+            )
+        except Exception as e2:
+            logger.error(
+                "❌ 恢复止盈单也失败 %s: %s — 仓位无止盈保护!",
+                pos.symbol, e2,
+            )
+            if self.notifier:
+                await self.notifier.send(
+                    f"🚨 <b>严重警告</b>\n"
+                    f"  {pos.symbol} 止盈单替换失败且无法恢复\n"
+                    f"  请手动检查并设置止盈!"
+                )
 
     async def _calc_5m_drop_ratio(
         self,

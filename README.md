@@ -223,6 +223,12 @@ cp .env.example .env
 
 > 建议使用 Nginx 反向代理统一到 80/443 端口，不直接暴露 8899 和 3000。
 
+# 部署前的操作
+
+```bash
+chmod +x /Users/tony/Documents/crypto/duo-live/deploy.sh
+```
+
 ### 使用 PM2 管理进程
 
 项目根目录已包含 `ecosystem.config.js`，使用 PM2 管理后端和前端进程：

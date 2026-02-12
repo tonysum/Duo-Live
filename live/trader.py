@@ -278,11 +278,6 @@ class LiveTrader:
 
             if symbol in combined_symbols:
                 self.console.print(f"  [dim]Skip {symbol}: already in position (exchange/pending)[/dim]")
-                self.store.save_signal_event(SignalEvent(
-                    timestamp=now.isoformat(), symbol=symbol,
-                    surge_ratio=signal.surge_ratio, price=str(signal.price),
-                    accepted=False, reject_reason="already in position",
-                ))
                 return False
             if combined_count >= self.config.max_positions:
                 reason = (f"max positions reached ({len(open_pos)} exchange"
