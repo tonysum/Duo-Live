@@ -25,6 +25,9 @@ export interface Position {
   leverage: number;
   tp_pct: number;
   strength: string;
+  liquidation_price: number;
+  margin: number;
+  margin_ratio: number;
 }
 
 export interface LiveTrade {

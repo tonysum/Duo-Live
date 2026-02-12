@@ -42,6 +42,9 @@ class PositionItem(BaseModel):
     leverage: int = 0
     tp_pct: float = 0
     strength: str = ""
+    liquidation_price: float = 0
+    margin: float = 0
+    margin_ratio: float = 0
 
 
 class LiveTradeItem(BaseModel):
@@ -224,18 +227,32 @@ def create_app(trader) -> FastAPI:
         """List open positions from exchange."""
         try:
             all_pos = await trader.client.get_position_risk()
-            return [
-                PositionItem(
+            items = []
+            for p in all_pos:
+                amt = float(p.position_amt)
+                if amt == 0:
+                    continue
+                liq = float(p.liquidation_price)
+                margin = float(p.isolated_margin)
+                upnl = float(p.unrealized_profit)
+                # margin_ratio: how much of margin is used
+                # (margin + upnl) / margin — lower means closer to liquidation
+                if margin > 0:
+                    margin_ratio = round((margin + upnl) / margin * 100, 2)
+                else:
+                    margin_ratio = 0
+                items.append(PositionItem(
                     symbol=p.symbol,
-                    side="LONG" if float(p.position_amt) > 0 else "SHORT",
+                    side="LONG" if amt > 0 else "SHORT",
                     entry_price=float(p.entry_price),
-                    quantity=abs(float(p.position_amt)),
-                    unrealized_pnl=float(p.unrealized_profit),
+                    quantity=abs(amt),
+                    unrealized_pnl=upnl,
                     leverage=int(p.leverage),
-                )
-                for p in all_pos
-                if float(p.position_amt) != 0
-            ]
+                    liquidation_price=liq,
+                    margin=margin,
+                    margin_ratio=margin_ratio,
+                ))
+            return items
         except Exception as e:
             raise HTTPException(500, detail=str(e))
 

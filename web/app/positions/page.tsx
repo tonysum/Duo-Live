@@ -103,7 +103,7 @@ export default function PositionsPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-zinc-100 dark:border-zinc-800">
-                    {["Symbol", "Side", "Qty", "Entry", "Leverage", "Unrealized PnL", "Action"].map(
+                    {["Symbol", "Side", "Qty", "Entry", "Leverage", "Liq. Price", "Margin", "Margin %", "Unrealized PnL", "Action"].map(
                       (h) => (
                         <th
                           key={h}
@@ -152,6 +152,23 @@ export default function PositionsPage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
                         {p.leverage}x
+                      </td>
+                      <td className="px-4 py-3 text-xs text-orange-600 dark:text-orange-400 font-mono">
+                        {p.liquidation_price > 0 ? p.liquidation_price.toFixed(4) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                        {p.margin > 0 ? p.margin.toFixed(2) : "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn("text-xs font-medium font-mono", {
+                            "text-emerald-600 dark:text-emerald-400": p.margin_ratio > 50,
+                            "text-yellow-600 dark:text-yellow-400": p.margin_ratio > 20 && p.margin_ratio <= 50,
+                            "text-red-600 dark:text-red-400": p.margin_ratio <= 20,
+                          })}
+                        >
+                          {p.margin_ratio > 0 ? `${p.margin_ratio.toFixed(1)}%` : "—"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <span
