@@ -21,8 +21,8 @@ module.exports = {
         },
         {
             name: "duo-live-frontend",
-            script: "npx",
-            args: "next start -H 0.0.0.0 -p 3000",
+            script: "node_modules/.bin/next",
+            args: "start -H 0.0.0.0 -p 3000",
             cwd: "./web",
             restart_delay: 3000,
             autorestart: true,

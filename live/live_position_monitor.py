@@ -18,7 +18,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional
 
 from .binance_client import BinanceFuturesClient, BinanceAPIError
@@ -395,6 +395,30 @@ class LivePositionMonitor:
             except Exception:
                 pass
     # ------------------------------------------------------------------
+    # Price rounding helper (tickSize-based)
+    # ------------------------------------------------------------------
+
+    async def _round_trigger_price(self, symbol: str, price: Decimal) -> Decimal:
+        """Round a trigger price to the symbol's tickSize from PRICE_FILTER.
+
+        Falls back to pricePrecision if tickSize is not available.
+        """
+        info = await self.client.get_exchange_info()
+        for s in info.symbols:
+            if s.symbol == symbol:
+                # Prefer tickSize from PRICE_FILTER (definitive constraint)
+                for f in s.filters:
+                    if f.filter_type.value == "PRICE_FILTER" and f.tick_size:
+                        tick = f.tick_size
+                        # Round down to nearest tick
+                        return (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+                # Fallback: use pricePrecision
+                return self.executor._round_price(price, s.price_precision)
+        # Last resort: use executor's precision cache
+        price_prec, _ = await self.executor._get_precision(symbol)
+        return self.executor._round_price(price, price_prec)
+
+    # ------------------------------------------------------------------
     # Dynamic TP (V2 — strength evaluation at 2h / 12h checkpoints)
     # ------------------------------------------------------------------
 
@@ -488,12 +512,14 @@ class LivePositionMonitor:
         )
         new_tp_price = pos.entry_price * tp_mult
 
-        # Round to correct tick size via executor's precision helpers
+        # Round to correct tick size via PRICE_FILTER.tickSize
         try:
-            price_prec, _ = await self.executor._get_precision(pos.symbol)
-            new_tp_price = self.executor._round_price(new_tp_price, price_prec)
+            new_tp_price = await self._round_trigger_price(pos.symbol, new_tp_price)
         except Exception as e:
-            logger.warning("获取精度失败, 回退使用原始价格: %s", e)
+            logger.error("获取精度失败, 无法安全计算新止盈价: %s", e)
+            # Re-place old TP instead of risking an unrounded price
+            await self._restore_tp_order(pos, old_tp_algo_id)
+            return
         new_tp_str = str(new_tp_price)
 
         # Place new TP
@@ -555,10 +581,10 @@ class LivePositionMonitor:
         restore_price = pos.entry_price * tp_mult
 
         try:
-            price_prec, _ = await self.executor._get_precision(pos.symbol)
-            restore_price = self.executor._round_price(restore_price, price_prec)
-        except Exception:
-            pass
+            restore_price = await self._round_trigger_price(pos.symbol, restore_price)
+        except Exception as e:
+            logger.error("恢复止盈时获取精度失败: %s — 使用 8 位小数兜底", e)
+            restore_price = restore_price.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
 
         close_side = "SELL" if is_long else "BUY"
         try:
