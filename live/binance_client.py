@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import hmac
 import os
 import time
@@ -35,6 +36,8 @@ from .binance_models import (
     PositionRisk,
     TickerPrice,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BinanceAPIError(Exception):
