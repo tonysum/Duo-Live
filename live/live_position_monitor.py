@@ -430,6 +430,21 @@ class LivePositionMonitor:
         except Exception as e:
             logger.debug("Algo order check failed: %s", e)
 
+        # ── 2.5. Fallback: re-place if algo ID lost (e.g. failed replacement) ──
+        if not pos.closed and pos.tp_sl_placed:
+            if pos.tp_algo_id is None and not pos.tp_triggered:
+                logger.warning(
+                    "⚠️ 检测到止盈单丢失 (algo_id=None): %s — 自动补挂",
+                    pos.symbol,
+                )
+                await self._re_place_single_order(pos, "tp")
+            if pos.sl_algo_id is None and not pos.sl_triggered:
+                logger.warning(
+                    "⚠️ 检测到止损单丢失 (algo_id=None): %s — 自动补挂",
+                    pos.symbol,
+                )
+                await self._re_place_single_order(pos, "sl")
+
         # ── 3. Max hold time enforcement (legacy fallback, strategy handles this) ──
         if not pos.closed and pos.entry_filled and not self.strategy:
             hold_hours = (now - pos.created_at).total_seconds() / 3600

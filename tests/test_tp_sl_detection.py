@@ -294,3 +294,79 @@ class TestRePlaceSingleOrder:
         # Nothing should have been called
         mon.client.place_algo_order = AsyncMock()
         mon.client.place_algo_order.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Fallback: algo_id=None (e.g. failed _replace_tp_order)
+# ──────────────────────────────────────────────────────────────────
+
+class TestAlgoIdNoneFallback:
+    @pytest.mark.asyncio
+    async def test_tp_algo_id_none_triggers_replace(self, config):
+        """tp_algo_id=None + tp_sl_placed=True → auto re-place TP."""
+        mon = _make_monitor(config)
+        pos = _make_filled_pos()
+        pos.tp_algo_id = None  # Lost due to failed replacement
+
+        mon._positions["BTCUSDT"] = pos
+        # SL still in open list so Section 2 doesn't catch it
+        sl_algo = MagicMock()
+        sl_algo.algo_id = 200
+        mon.client.get_open_algo_orders = AsyncMock(return_value=[sl_algo])
+        mon._re_place_single_order = AsyncMock()
+        mon.strategy = None
+        mon._update_dynamic_tp = AsyncMock()
+
+        await mon._check_position(pos)
+
+        assert pos.closed is False
+        # Should attempt to re-place TP
+        assert any(
+            call.args == (pos, "tp")
+            for call in mon._re_place_single_order.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_sl_algo_id_none_triggers_replace(self, config):
+        """sl_algo_id=None + tp_sl_placed=True → auto re-place SL."""
+        mon = _make_monitor(config)
+        pos = _make_filled_pos()
+        pos.sl_algo_id = None  # Lost
+
+        mon._positions["BTCUSDT"] = pos
+        # TP is still open
+        tp_algo = MagicMock()
+        tp_algo.algo_id = 100
+        mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo])
+        mon._re_place_single_order = AsyncMock()
+        mon.strategy = None
+        mon._update_dynamic_tp = AsyncMock()
+
+        await mon._check_position(pos)
+
+        assert pos.closed is False
+        assert any(
+            call.args == (pos, "sl")
+            for call in mon._re_place_single_order.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_both_present_no_fallback(self, config):
+        """Both algo IDs present → no fallback needed."""
+        mon = _make_monitor(config)
+        pos = _make_filled_pos(tp_algo=100, sl_algo=200)
+
+        mon._positions["BTCUSDT"] = pos
+        # Both still open
+        tp_algo = MagicMock()
+        tp_algo.algo_id = 100
+        sl_algo = MagicMock()
+        sl_algo.algo_id = 200
+        mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo, sl_algo])
+        mon._re_place_single_order = AsyncMock()
+        mon.strategy = None
+        mon._update_dynamic_tp = AsyncMock()
+
+        await mon._check_position(pos)
+
+        mon._re_place_single_order.assert_not_called()
