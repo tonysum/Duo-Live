@@ -192,7 +192,7 @@ class SurgeShortStrategy(Strategy):
 
         return EntryDecision(
             should_enter=True,
-            side="SELL",  # SHORT strategy
+            side="SHORT",  # SHORT strategy
             tp_pct=config.strong_tp_pct,
             sl_pct=config.stop_loss_pct,
         )

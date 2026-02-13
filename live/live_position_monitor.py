@@ -185,6 +185,53 @@ class LivePositionMonitor:
                 symbol, side, qty, pos_risk.entry_price, tp_info, sl_info,
             )
 
+            # ── Auto-place TP/SL if missing (crash between fill and TP/SL) ──
+            if not tracked.tp_sl_placed and pos_risk.entry_price:
+                try:
+                    entry_p = Decimal(str(pos_risk.entry_price))
+                    tp_pct = self.config.strong_tp_pct
+                    sl_pct = self.config.stop_loss_pct
+
+                    if side == "SHORT":
+                        tp_price = entry_p * (1 - Decimal(str(tp_pct)) / 100)
+                        sl_price = entry_p * (1 + Decimal(str(sl_pct)) / 100)
+                        close_side_order = "BUY"
+                    else:
+                        tp_price = entry_p * (1 + Decimal(str(tp_pct)) / 100)
+                        sl_price = entry_p * (1 - Decimal(str(sl_pct)) / 100)
+                        close_side_order = "SELL"
+
+                    is_hedge = await self.client.get_position_mode()
+                    pos_side = side if is_hedge else "BOTH"
+
+                    tp_sl_result = await self.executor.place_tp_sl(
+                        symbol=symbol,
+                        close_side=close_side_order,
+                        pos_side=pos_side,
+                        tp_price=str(tp_price),
+                        sl_price=str(sl_price),
+                        quantity=qty,
+                        order_prefix=f"rc_{symbol[:6].lower()}",
+                    )
+                    if tp_sl_result.get("tp_order"):
+                        tracked.tp_algo_id = tp_sl_result["tp_order"].algo_id
+                    if tp_sl_result.get("sl_order"):
+                        tracked.sl_algo_id = tp_sl_result["sl_order"].algo_id
+                    tracked.tp_sl_placed = True
+                    logger.info(
+                        "🔄 自动补挂 TP/SL: %s tp=%s sl=%s",
+                        symbol, tracked.tp_algo_id, tracked.sl_algo_id,
+                    )
+                    if self.notifier:
+                        await self.notifier.send(
+                            f"🔄 <b>恢复补挂 TP/SL</b>\n"
+                            f"  {symbol} {side}\n"
+                            f"  止盈: {tp_price}\n"
+                            f"  止损: {sl_price}"
+                        )
+                except Exception as e:
+                    logger.error("❌ 恢复时补挂 TP/SL 失败 %s: %s", symbol, e)
+
         if recovered > 0:
             logger.info("🔄 共恢复 %d 个持仓", recovered)
             if self.notifier:
