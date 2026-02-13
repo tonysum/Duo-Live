@@ -172,7 +172,7 @@ duo-live/
 UTC 整点 + 5s
     │
     ▼
- 扫描全市场 (~400 USDT 永续合约)
+ 扫描全市场 (~400+ USDT 永续合约)
     │  sell_volume / yesterday_avg_sell ≥ 10x ?
     ▼
  信号推入 asyncio.Queue

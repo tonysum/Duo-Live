@@ -366,46 +366,66 @@ class LivePositionMonitor:
             sl_still_open = pos.sl_algo_id is not None and pos.sl_algo_id in algo_ids
 
             if pos.tp_algo_id and not tp_still_open and not pos.tp_triggered:
-                # TP was triggered
-                pos.tp_triggered = True
-                logger.info("🎯 止盈触发: %s (algoId=%s)", pos.symbol, pos.tp_algo_id)
-                if self.notifier:
-                    await self.notifier.notify_tp_triggered(pos.symbol, pos.side)
-                self._record_live_trade(
-                    pos, event="tp",
-                    entry_price=str(pos.entry_price or ""),
-                    algo_id=str(pos.tp_algo_id),
-                )
-                if sl_still_open:
-                    try:
-                        await self.client.cancel_algo_order(
-                            pos.symbol, algo_id=pos.sl_algo_id
-                        )
-                        logger.info("🗑️ 已撤销止损单: %s", pos.sl_algo_id)
-                    except Exception as e:
-                        logger.warning("撤销止损单失败: %s", e)
-                pos.closed = True
+                # TP disappeared — verify via exchange position
+                exchange_amt = await self._get_exchange_position_amt(pos.symbol)
+                if exchange_amt == 0:
+                    # Real trigger — position is closed on exchange
+                    pos.tp_triggered = True
+                    logger.info("🎯 止盈触发: %s (algoId=%s)", pos.symbol, pos.tp_algo_id)
+                    if self.notifier:
+                        await self.notifier.notify_tp_triggered(pos.symbol, pos.side)
+                    self._record_live_trade(
+                        pos, event="tp",
+                        entry_price=str(pos.entry_price or ""),
+                        algo_id=str(pos.tp_algo_id),
+                    )
+                    if sl_still_open:
+                        try:
+                            await self.client.cancel_algo_order(
+                                pos.symbol, algo_id=pos.sl_algo_id
+                            )
+                            logger.info("🗑️ 已撤销止损单: %s", pos.sl_algo_id)
+                        except Exception as e:
+                            logger.warning("撤销止损单失败: %s", e)
+                    pos.closed = True
+                else:
+                    # Manually cancelled — auto re-place TP
+                    logger.warning(
+                        "⚠️ 止盈单被手动取消: %s (algoId=%s) — 自动补挂",
+                        pos.symbol, pos.tp_algo_id,
+                    )
+                    await self._re_place_single_order(pos, "tp")
 
             elif pos.sl_algo_id and not sl_still_open and not pos.sl_triggered:
-                # SL was triggered
-                pos.sl_triggered = True
-                logger.info("🛑 止损触发: %s (algoId=%s)", pos.symbol, pos.sl_algo_id)
-                if self.notifier:
-                    await self.notifier.notify_sl_triggered(pos.symbol, pos.side)
-                self._record_live_trade(
-                    pos, event="sl",
-                    entry_price=str(pos.entry_price or ""),
-                    algo_id=str(pos.sl_algo_id),
-                )
-                if tp_still_open:
-                    try:
-                        await self.client.cancel_algo_order(
-                            pos.symbol, algo_id=pos.tp_algo_id
-                        )
-                        logger.info("🗑️ 已撤销止盈单: %s", pos.tp_algo_id)
-                    except Exception as e:
-                        logger.warning("撤销止盈单失败: %s", e)
-                pos.closed = True
+                # SL disappeared — verify via exchange position
+                exchange_amt = await self._get_exchange_position_amt(pos.symbol)
+                if exchange_amt == 0:
+                    # Real trigger — position is closed on exchange
+                    pos.sl_triggered = True
+                    logger.info("🛑 止损触发: %s (algoId=%s)", pos.symbol, pos.sl_algo_id)
+                    if self.notifier:
+                        await self.notifier.notify_sl_triggered(pos.symbol, pos.side)
+                    self._record_live_trade(
+                        pos, event="sl",
+                        entry_price=str(pos.entry_price or ""),
+                        algo_id=str(pos.sl_algo_id),
+                    )
+                    if tp_still_open:
+                        try:
+                            await self.client.cancel_algo_order(
+                                pos.symbol, algo_id=pos.tp_algo_id
+                            )
+                            logger.info("🗑️ 已撤销止盈单: %s", pos.tp_algo_id)
+                        except Exception as e:
+                            logger.warning("撤销止盈单失败: %s", e)
+                    pos.closed = True
+                else:
+                    # Manually cancelled — auto re-place SL
+                    logger.warning(
+                        "⚠️ 止损单被手动取消: %s (algoId=%s) — 自动补挂",
+                        pos.symbol, pos.sl_algo_id,
+                    )
+                    await self._re_place_single_order(pos, "sl")
 
         except Exception as e:
             logger.debug("Algo order check failed: %s", e)
@@ -486,6 +506,110 @@ class LivePositionMonitor:
                 logger.info("🗑️ 已撤销%s单: %s", label, algo_id)
             except Exception:
                 pass
+    # ------------------------------------------------------------------
+    # Position verification & auto re-place helpers
+    # ------------------------------------------------------------------
+
+    async def _get_exchange_position_amt(self, symbol: str) -> float:
+        """Check actual position amount on exchange. Returns 0 if no position."""
+        try:
+            positions = await self.client.get_position_risk(symbol)
+            for p in positions:
+                if p.symbol == symbol:
+                    return abs(float(p.position_amt))
+        except Exception as e:
+            logger.warning("查询持仓失败 %s: %s — 保守视为仓位存在", symbol, e)
+            return 1.0  # Fail-safe: assume position exists to avoid false close
+        return 0.0
+
+    async def _re_place_single_order(
+        self, pos: TrackedPosition, order_type: str,
+    ) -> None:
+        """Re-place a single TP or SL order that was manually cancelled.
+
+        Args:
+            pos: The tracked position.
+            order_type: "tp" or "sl".
+        """
+        if not pos.entry_price:
+            return
+
+        is_long = pos.side == "LONG"
+        close_side = "SELL" if is_long else "BUY"
+
+        if order_type == "tp":
+            pct = Decimal(str(pos.current_tp_pct))
+            if is_long:
+                price = pos.entry_price * (1 + pct / 100)
+            else:
+                price = pos.entry_price * (1 - pct / 100)
+            algo_type = "TAKE_PROFIT_MARKET"
+            prefix = "tp"
+            label = "止盈"
+        else:
+            pct = Decimal(str(self.config.stop_loss_pct))
+            if is_long:
+                price = pos.entry_price * (1 - pct / 100)
+            else:
+                price = pos.entry_price * (1 + pct / 100)
+            algo_type = "STOP_MARKET"
+            prefix = "sl"
+            label = "止损"
+
+        # Round trigger price
+        try:
+            price = await self._round_trigger_price(pos.symbol, price)
+        except Exception as e:
+            logger.error("补挂%s获取精度失败: %s — 使用 8 位小数兜底", label, e)
+            price = price.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
+
+        try:
+            is_hedge = await self.client.get_position_mode()
+            ps = pos.side if is_hedge else "BOTH"
+
+            import uuid
+            order_prefix = uuid.uuid4().hex[:8]
+
+            new_order = await self.client.place_algo_order(
+                symbol=pos.symbol,
+                side=close_side,
+                positionSide=ps,
+                type=algo_type,
+                triggerPrice=str(price),
+                quantity=pos.quantity,
+                reduceOnly="true",
+                priceProtect="true",
+                workingType="CONTRACT_PRICE",
+                clientAlgoId=f"{prefix}_{order_prefix}",
+            )
+
+            if order_type == "tp":
+                pos.tp_algo_id = new_order.algo_id
+            else:
+                pos.sl_algo_id = new_order.algo_id
+
+            logger.info(
+                "✅ 自动补挂%s单: %s @ %s (algoId=%s)",
+                label, pos.symbol, price, new_order.algo_id,
+            )
+            if self.notifier:
+                await self.notifier.send(
+                    f"⚠️ <b>{label}单被手动取消，已自动补挂</b>\n"
+                    f"  {pos.symbol} {pos.side}\n"
+                    f"  {label}: {price}"
+                )
+        except Exception as e:
+            logger.error(
+                "❌ 自动补挂%s单失败 %s: %s — 仓位可能无%s保护!",
+                label, pos.symbol, e, label,
+            )
+            if self.notifier:
+                await self.notifier.send(
+                    f"🚨 <b>严重警告</b>\n"
+                    f"  {pos.symbol} {label}单补挂失败\n"
+                    f"  请立即手动设置{label}!"
+                )
+
     # ------------------------------------------------------------------
     # Price rounding helper (tickSize-based)
     # ------------------------------------------------------------------
