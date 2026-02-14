@@ -199,7 +199,7 @@ class LiveTrader:
 
                 self.console.print(
                     f"\n[cyan]📡 {len(pending)} signal(s) detected, "
-                    f"entering pending pool (60s delay)...[/cyan]"
+                    f"entering pending pool (10s delay)...[/cyan]"
                 )
                 for s in pending:
                     self.console.print(
@@ -207,7 +207,7 @@ class LiveTrader:
                         f"signal_price={s.price:.6f}[/dim]"
                     )
 
-                # Wait 60 seconds before executing entries
+                # Wait 10 seconds before executing entries
                 await asyncio.sleep(10)
 
                 # Execute pending signals ONE BY ONE (serialize live entries)

@@ -648,8 +648,17 @@ def create_app(trader) -> FastAPI:
     # ── WebSocket ────────────────────────────────────────────────
 
     @app.websocket("/ws/live")
-    async def websocket_live(ws: WebSocket):
-        """WebSocket endpoint for real-time updates."""
+    async def websocket_live(ws: WebSocket, token: str | None = None):
+        """WebSocket endpoint for real-time updates (requires auth)."""
+        # Simple token auth via query parameter
+        expected_token = os.environ.get("WS_TOKEN", "")
+        if expected_token and token != expected_token:
+            await ws.accept()
+            await ws.send_json({"error": "Unauthorized"})
+            await ws.close(code=4004)
+            logger.warning("WebSocket auth failed - invalid token")
+            return
+
         await ws.accept()
         ws_clients.append(ws)
         logger.info("WebSocket client connected (%d total)", len(ws_clients))
