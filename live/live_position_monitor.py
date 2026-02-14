@@ -201,6 +201,10 @@ class LivePositionMonitor:
                         sl_price = entry_p * (1 - Decimal(str(sl_pct)) / 100)
                         close_side_order = "SELL"
 
+                    # Round to exchange precision
+                    tp_price = await self._round_trigger_price(symbol, tp_price)
+                    sl_price = await self._round_trigger_price(symbol, sl_price)
+
                     is_hedge = await self.client.get_position_mode()
                     pos_side = side if is_hedge else "BOTH"
 
@@ -575,8 +579,12 @@ class LivePositionMonitor:
         try:
             price = await self._round_trigger_price(pos.symbol, price)
         except Exception as e:
-            logger.error("补挂%s获取精度失败: %s — 使用 8 位小数兜底", label, e)
-            price = price.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
+            logger.error("补挂%s获取精度失败: %s — 使用 pricePrecision 兜底", label, e)
+            try:
+                price_prec, _ = await self.executor._get_precision(pos.symbol)
+                price = self.executor._round_price(price, price_prec)
+            except Exception:
+                price = price.quantize(Decimal("1e-4"), rounding=ROUND_DOWN)
 
         try:
             is_hedge = await self.client.get_position_mode()
@@ -633,18 +641,38 @@ class LivePositionMonitor:
         """Round a trigger price to the symbol's tickSize from PRICE_FILTER.
 
         Falls back to pricePrecision if tickSize is not available.
+        The result is always normalized to strip trailing zeros, which prevents
+        Binance -1111 "Precision is over the maximum" errors.
         """
         info = await self.client.get_exchange_info()
         for s in info.symbols:
             if s.symbol == symbol:
                 # Prefer tickSize from PRICE_FILTER (definitive constraint)
                 for f in s.filters:
-                    if f.filter_type.value == "PRICE_FILTER" and f.tick_size:
+                    if (
+                        f.filter_type.value == "PRICE_FILTER"
+                        and f.tick_size is not None
+                        and f.tick_size > 0
+                    ):
                         tick = f.tick_size
                         # Round down to nearest tick
-                        return (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+                        rounded = (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+                        result = rounded.normalize()
+                        # Normalize can produce "1E+2" notation; ensure plain string
+                        if result == result.to_integral_value():
+                            result = result.quantize(Decimal("1"))
+                        logger.debug(
+                            "_round_trigger_price %s: %s → %s (tick=%s)",
+                            symbol, price, result, tick,
+                        )
+                        return result
                 # Fallback: use pricePrecision
-                return self.executor._round_price(price, s.price_precision)
+                rounded = self.executor._round_price(price, s.price_precision)
+                logger.debug(
+                    "_round_trigger_price %s: %s → %s (pricePrecision=%d)",
+                    symbol, price, rounded, s.price_precision,
+                )
+                return rounded
         # Last resort: use executor's precision cache
         price_prec, _ = await self.executor._get_precision(symbol)
         return self.executor._round_price(price, price_prec)
@@ -814,8 +842,12 @@ class LivePositionMonitor:
         try:
             restore_price = await self._round_trigger_price(pos.symbol, restore_price)
         except Exception as e:
-            logger.error("恢复止盈时获取精度失败: %s — 使用 8 位小数兜底", e)
-            restore_price = restore_price.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
+            logger.error("恢复止盈时获取精度失败: %s — 使用 pricePrecision 兜底", e)
+            try:
+                price_prec, _ = await self.executor._get_precision(pos.symbol)
+                restore_price = self.executor._round_price(restore_price, price_prec)
+            except Exception:
+                restore_price = restore_price.quantize(Decimal("1e-4"), rounding=ROUND_DOWN)
 
         close_side = "SELL" if is_long else "BUY"
         try:

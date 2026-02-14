@@ -53,6 +53,7 @@ class TelegramBot:
 
         self._running = True
         logger.info("🤖 Telegram Bot 命令监听已启动")
+        backoff = 5  # seconds, grows on consecutive errors
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             while self._running:
@@ -67,10 +68,21 @@ class TelegramBot:
                     )
                     data = resp.json()
                     if not data.get("ok"):
-                        logger.warning("Telegram getUpdates 失败: %s", data)
-                        await asyncio.sleep(5)
+                        # Respect retry_after from 429 responses
+                        retry_after = (
+                            data.get("parameters", {}).get("retry_after")
+                            or backoff
+                        )
+                        logger.warning(
+                            "Telegram getUpdates 失败: %s (等待 %ss)",
+                            data, retry_after,
+                        )
+                        await asyncio.sleep(retry_after)
+                        backoff = min(backoff * 2, 60)  # exponential backoff
                         continue
 
+                    # Success — reset backoff
+                    backoff = 5
                     for update in data.get("result", []):
                         self._offset = update["update_id"] + 1
                         await self._handle_update(update, client)
@@ -81,7 +93,8 @@ class TelegramBot:
                     continue  # Normal for long-polling
                 except Exception as e:
                     logger.warning("Telegram Bot 异常: %s", e)
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
 
     def stop(self):
         self._running = False
