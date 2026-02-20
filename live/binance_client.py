@@ -130,6 +130,11 @@ class BinanceFuturesClient:
     # Circuit breaker: global ban state (class-level, shared across all instances)
     _ban_until: float = 0.0  # Unix timestamp (seconds) when IP ban lifts
 
+    # Exchange info cache (weight=40 per call — cache for 1 hour)
+    _exchange_info_cache: "ExchangeInfoResponse | None" = None
+    _exchange_info_ts: float = 0.0
+    _EXCHANGE_INFO_TTL: float = 3600.0  # seconds
+
     async def _request(
         self,
         method: str,
@@ -222,10 +227,26 @@ class BinanceFuturesClient:
     # Market Data Endpoints (public, no auth)
     # =========================================================================
 
-    async def get_exchange_info(self) -> ExchangeInfoResponse:
-        """Get exchange trading rules and symbol information."""
+    async def get_exchange_info(self, force_refresh: bool = False) -> ExchangeInfoResponse:
+        """Get exchange trading rules and symbol information.
+
+        Results are cached for 1 hour (Binance weight=40 per call).
+        Pass force_refresh=True to bypass the cache.
+        """
+        now = time.time()
+        if (
+            not force_refresh
+            and BinanceFuturesClient._exchange_info_cache is not None
+            and now - BinanceFuturesClient._exchange_info_ts < BinanceFuturesClient._EXCHANGE_INFO_TTL
+        ):
+            return BinanceFuturesClient._exchange_info_cache
+
         data = await self._request("GET", "/fapi/v1/exchangeInfo")
-        return ExchangeInfoResponse.model_validate(data)
+        result = ExchangeInfoResponse.model_validate(data)
+        BinanceFuturesClient._exchange_info_cache = result
+        BinanceFuturesClient._exchange_info_ts = now
+        logger.debug("🗘️ exchangeInfo 刷新缓存")
+        return result
 
     async def get_klines(
         self,

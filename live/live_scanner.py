@@ -146,7 +146,9 @@ class LiveSurgeScanner:
         result.symbols_scanned = len(symbols)
 
         # 2. Scan each symbol (with concurrency control)
-        semaphore = asyncio.Semaphore(10)  # Max 10 concurrent API calls
+        # Binance kline weight=5 per call, rate limit 2400/min.
+        # 300 symbols × 2 calls = 600 calls; semaphore=3 keeps burst safe.
+        semaphore = asyncio.Semaphore(3)
 
         async def scan_one(symbol: str):
             async with semaphore:
