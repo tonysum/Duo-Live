@@ -123,50 +123,102 @@ class UpdateConfigRequest(BaseModel):
 def _pair_trades(raw_fills: list[dict]) -> list[dict]:
     """Pair entry and exit fills into complete round-trip trades.
 
-    Entry fill: realizedPnl == 0 (opening position)
-    Exit fill:  realizedPnl != 0 (closing position, has PnL)
-    Groups by symbol, pairs chronologically.
-    """
-    from collections import defaultdict
+    Handles split exits correctly: if a position of 541 qty is closed in two
+    fills (185 + 396), they are merged into one trade with:
+      - quantity-weighted average exit price
+      - summed PnL
+      - exit_time of the last fill
 
+    Logic:
+      Entry fill: realizedPnl ~= 0  (opening position)
+      Exit fill:  realizedPnl != 0  (closing position, has PnL)
+    """
     fills = sorted(raw_fills, key=lambda f: int(f.get("time", 0)))
-    open_entries: dict[str, list[dict]] = defaultdict(list)
+
+    # open_position[symbol] = accumulated position state
+    open_position: dict[str, dict] = {}
     completed: list[dict] = []
 
     for f in fills:
-        symbol = f.get("symbol", "")
-        pnl = float(f.get("realizedPnl", "0"))
-        price = float(f.get("price", "0"))
-        qty = float(f.get("qty", "0"))
-        ts_ms = int(f.get("time", 0))
-        side_raw = f.get("side", "")  # BUY or SELL from Binance
+        symbol   = f.get("symbol", "")
+        pnl      = float(f.get("realizedPnl", "0"))
+        price    = float(f.get("price", "0"))
+        qty      = float(f.get("qty", "0"))
+        ts_ms    = int(f.get("time", 0))
+        side_raw = f.get("side", "")   # BUY or SELL from Binance
 
         if abs(pnl) < 0.0001:
-            # Entry fill
-            open_entries[symbol].append({
-                "price": price, "qty": qty,
-                "time": ts_ms, "side_raw": side_raw,
-            })
-        else:
-            # Exit fill — pair with earliest entry for this symbol
-            entry = open_entries[symbol].pop(0) if open_entries[symbol] else None
-            pos_side = "SHORT" if side_raw == "BUY" else "LONG"
-            entry_price = entry["price"] if entry else 0.0
-            entry_time = entry["time"] if entry else ts_ms
+            # ── Entry fill ──────────────────────────────────────
+            # If there's an incomplete open position, finalize it first
+            if symbol in open_position:
+                op = open_position.pop(symbol)
+                if op["exits"]:
+                    completed.append(_finalize_trade(op))
 
-            completed.append({
-                "symbol": symbol,
-                "side": pos_side,
-                "entry_price": entry_price,
-                "exit_price": price,
-                "entry_time": entry_time,
-                "exit_time": ts_ms,
-                "quantity": qty,
-                "pnl_usdt": pnl,
-            })
+            open_position[symbol] = {
+                "symbol":      symbol,
+                "side":        "SHORT" if side_raw == "SELL" else "LONG",
+                "entry_price": price,
+                "entry_qty":   qty,
+                "entry_time":  ts_ms,
+                "exits":       [],   # list of {qty, price, pnl, time}
+                "exit_qty":    0.0,
+            }
+        else:
+            # ── Exit fill ────────────────────────────────────────
+            if symbol not in open_position:
+                # No matching entry in fetch window — record as-is
+                pos_side = "SHORT" if side_raw == "BUY" else "LONG"
+                completed.append({
+                    "symbol":      symbol,
+                    "side":        pos_side,
+                    "entry_price": 0.0,
+                    "exit_price":  price,
+                    "entry_time":  ts_ms,
+                    "exit_time":   ts_ms,
+                    "quantity":    qty,
+                    "pnl_usdt":    pnl,
+                })
+                continue
+
+            op = open_position[symbol]
+            op["exits"].append({"qty": qty, "price": price, "pnl": pnl, "time": ts_ms})
+            op["exit_qty"] += qty
+
+            # Fully closed when exit qty >= entry qty (allow tiny float drift)
+            if op["exit_qty"] >= op["entry_qty"] - 0.001:
+                completed.append(_finalize_trade(op))
+                del open_position[symbol]
+
+    # Finalize remaining positions (partially exited or still open)
+    for op in open_position.values():
+        if op["exits"]:
+            completed.append(_finalize_trade(op))
 
     completed.sort(key=lambda t: t["exit_time"], reverse=True)
     return completed
+
+
+def _finalize_trade(op: dict) -> dict:
+    """Merge all exit fills of one position into a single trade record."""
+    exits = op["exits"]
+    total_qty = sum(e["qty"] for e in exits)
+    total_pnl = sum(e["pnl"] for e in exits)
+    avg_exit  = (
+        sum(e["qty"] * e["price"] for e in exits) / total_qty
+        if total_qty > 0 else 0.0
+    )
+    return {
+        "symbol":      op["symbol"],
+        "side":        op["side"],
+        "entry_price": op["entry_price"],
+        "exit_price":  round(avg_exit, 8),
+        "entry_time":  op["entry_time"],
+        "exit_time":   max(e["time"] for e in exits),
+        "quantity":    op["entry_qty"],   # original position size
+        "pnl_usdt":    round(total_pnl, 6),
+    }
+
 
 
 # ── App factory ──────────────────────────────────────────────────────
