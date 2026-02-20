@@ -21,8 +21,10 @@ import hashlib
 import logging
 import hmac
 import os
+import re
 import time
 import urllib.parse
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -125,6 +127,9 @@ class BinanceFuturesClient:
     _MAX_RETRIES = 3
     _RETRY_BACKOFF = (1, 2, 4)  # seconds
 
+    # Circuit breaker: global ban state (class-level, shared across all instances)
+    _ban_until: float = 0.0  # Unix timestamp (seconds) when IP ban lifts
+
     async def _request(
         self,
         method: str,
@@ -132,6 +137,16 @@ class BinanceFuturesClient:
         params: dict[str, Any] | None = None,
         signed: bool = False,
     ) -> Any:
+        # ── Circuit breaker: block all calls while IP is banned ────────
+        now = time.time()
+        if now < BinanceFuturesClient._ban_until:
+            remain = int(BinanceFuturesClient._ban_until - now)
+            raise BinanceAPIError(
+                -1003,
+                f"IP 封禁中，剩余约 {remain}s（解封时间: "
+                f"{datetime.fromtimestamp(BinanceFuturesClient._ban_until).strftime('%H:%M:%S')}）",
+            )
+
         last_exc: Exception | None = None
 
         for attempt in range(self._MAX_RETRIES):
@@ -181,7 +196,21 @@ class BinanceFuturesClient:
             if isinstance(data, dict) and "code" in data:
                 code = int(data["code"])
                 if code < 0:
-                    raise BinanceAPIError(code, data.get("msg", "Unknown error"))
+                    err = BinanceAPIError(code, data.get("msg", "Unknown error"))
+                    # ── -1003: IP ban — record release time and circuit-break ──
+                    if code == -1003:
+                        m = re.search(r'banned until (\d+)', err.msg)
+                        if m:
+                            ban_ts = int(m.group(1)) / 1000  # ms → s
+                        else:
+                            ban_ts = time.time() + 60  # conservative 60s fallback
+                        BinanceFuturesClient._ban_until = ban_ts
+                        release = datetime.fromtimestamp(ban_ts).strftime('%H:%M:%S')
+                        logger.error(
+                            "🚫 Binance IP 封禁！解封时间: %s（剩余 %ds）— 停止所有 REST 请求",
+                            release, int(ban_ts - time.time()),
+                        )
+                    raise err
 
             response.raise_for_status()
             return data

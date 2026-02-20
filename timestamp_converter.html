@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>时间戳转换</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --accent:    #58a6ff;
+      --accent2:   #3fb950;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --danger:    #f85149;
+      --radius:    12px;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 520px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h1 span.icon { font-size: 22px; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin-bottom: 8px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 15px;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    input[type="text"]::placeholder { color: var(--muted); }
+
+    button {
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: #0d1117;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 10px 18px;
+      transition: opacity .15s, transform .1s;
+      white-space: nowrap;
+    }
+    button:hover  { opacity: .85; }
+    button:active { transform: scale(.97); }
+
+    .btn-now {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 500;
+      margin-bottom: 20px;
+      width: 100%;
+      padding: 8px;
+    }
+    .btn-now:hover { border-color: var(--accent); color: var(--accent); }
+
+    .result {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: none;
+    }
+    .result.visible { display: block; }
+
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+    }
+    .result-row:last-child { border-bottom: none; }
+
+    .result-label {
+      font-size: 12px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .result-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      text-align: right;
+    }
+    .result-value.accent { color: var(--accent2); }
+
+    .error {
+      color: var(--danger);
+      font-size: 13px;
+      margin-top: 10px;
+      display: none;
+    }
+    .error.visible { display: block; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1><span class="icon">⏱</span> 时间戳转换</h1>
+
+  <label>输入时间戳（秒 或 毫秒）</label>
+  <div class="input-row">
+    <input id="tsInput" type="text" placeholder="如: 1771588073239" autofocus />
+    <button onclick="convert()">转换</button>
+  </div>
+
+  <button class="btn-now" onclick="useNow()">📌 使用当前时间戳</button>
+
+  <div class="result" id="result">
+    <div class="result-row">
+      <span class="result-label">UTC</span>
+      <span class="result-value" id="utc"></span>
+    </div>
+    <div class="result-row">
+      <span class="result-label">北京时间 (UTC+8)</span>
+      <span class="result-value accent" id="cst"></span>
+    </div>
+    <div class="result-row">
+      <span class="result-label">Unix 秒</span>
+      <span class="result-value" id="sec"></span>
+    </div>
+    <div class="result-row">
+      <span class="result-label">Unix 毫秒</span>
+      <span class="result-value" id="ms"></span>
+    </div>
+    <div class="result-row">
+      <span class="result-label">相对现在</span>
+      <span class="result-value" id="rel"></span>
+    </div>
+  </div>
+  <div class="error" id="error">⚠️ 无效的时间戳，请输入数字</div>
+</div>
+
+<script>
+  const pad = n => String(n).padStart(2, '0');
+
+  function fmt(date) {
+    const Y = date.getUTCFullYear();
+    const M = pad(date.getUTCMonth() + 1);
+    const D = pad(date.getUTCDate());
+    const h = pad(date.getUTCHours());
+    const m = pad(date.getUTCMinutes());
+    const s = pad(date.getUTCSeconds());
+    return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+  }
+
+  function fmtOffset(date, offsetHours) {
+    const shifted = new Date(date.getTime() + offsetHours * 3600000);
+    return fmt(shifted);
+  }
+
+  function relative(ms) {
+    const diff = ms - Date.now();
+    const abs = Math.abs(diff);
+    const past = diff < 0;
+    const units = [
+      [86400000 * 365, '年'],
+      [86400000 * 30,  '个月'],
+      [86400000,       '天'],
+      [3600000,        '小时'],
+      [60000,          '分钟'],
+      [1000,           '秒'],
+    ];
+    for (const [u, label] of units) {
+      if (abs >= u) {
+        const n = Math.round(abs / u);
+        return past ? `${n} ${label}前` : `${n} ${label}后`;
+      }
+    }
+    return '刚刚';
+  }
+
+  function convert() {
+    const raw = document.getElementById('tsInput').value.trim();
+    const err  = document.getElementById('error');
+    const res  = document.getElementById('result');
+
+    if (!raw || isNaN(raw)) {
+      err.classList.add('visible');
+      res.classList.remove('visible');
+      return;
+    }
+    err.classList.remove('visible');
+
+    let num = parseInt(raw, 10);
+    // Auto-detect ms vs s (ms if > year 2200 in seconds)
+    const msTs = num > 9999999999 ? num : num * 1000;
+    const secTs = Math.floor(msTs / 1000);
+
+    const date = new Date(msTs);
+    document.getElementById('utc').textContent = fmt(date) + ' UTC';
+    document.getElementById('cst').textContent = fmtOffset(date, 8) + ' CST';
+    document.getElementById('sec').textContent = secTs;
+    document.getElementById('ms').textContent  = msTs;
+    document.getElementById('rel').textContent = relative(msTs);
+
+    res.classList.add('visible');
+  }
+
+  function useNow() {
+    document.getElementById('tsInput').value = Date.now();
+    convert();
+  }
+
+  document.getElementById('tsInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') convert();
+  });
+</script>
+</body>
+</html>

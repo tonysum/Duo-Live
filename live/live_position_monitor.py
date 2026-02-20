@@ -62,6 +62,10 @@ class TrackedPosition:
     evaluated_12h: bool = False
     strength: str = "unknown"  # strong / medium / weak
 
+    # Re-place failure counters (stop retrying after MAX_REPLACE_ATTEMPTS)
+    tp_fail_count: int = 0
+    sl_fail_count: int = 0
+
 
 class LivePositionMonitor:
     """Monitor live positions with deferred TP/SL placement.
@@ -75,7 +79,7 @@ class LivePositionMonitor:
         client: BinanceFuturesClient,
         executor,  # LiveOrderExecutor (avoids circular import)
         config: Optional[LiveTradingConfig] = None,
-        poll_interval: int = 30,
+        poll_interval: int = 120,
         notifier=None,  # TelegramNotifier (optional)
         store=None,     # TradeStore (optional, for live trade recording)
         strategy: "Strategy | None" = None,
@@ -541,6 +545,8 @@ class LivePositionMonitor:
             return 1.0  # Fail-safe: assume position exists to avoid false close
         return 0.0
 
+    MAX_REPLACE_ATTEMPTS: int = 10
+
     async def _re_place_single_order(
         self, pos: TrackedPosition, order_type: str,
     ) -> None:
@@ -551,6 +557,29 @@ class LivePositionMonitor:
             order_type: "tp" or "sl".
         """
         if not pos.entry_price:
+            return
+
+        # Guard: stop retrying after too many failures to avoid exchange ban
+        fail_count = pos.tp_fail_count if order_type == "tp" else pos.sl_fail_count
+        label_str = "止盈" if order_type == "tp" else "止损"
+        if fail_count >= self.MAX_REPLACE_ATTEMPTS:
+            if fail_count == self.MAX_REPLACE_ATTEMPTS:
+                # Log once at exactly the limit, then silence
+                logger.error(
+                    "🚫 %s %s单补挂已失败 %d 次，停止重试以防封禁 — 请手动处理!",
+                    pos.symbol, label_str, fail_count,
+                )
+                if self.notifier:
+                    await self.notifier.send(
+                        f"🚫 <b>停止自动补挂</b>\n"
+                        f"  {pos.symbol} {label_str}单连续失败 {fail_count} 次\n"
+                        f"  请立即手动设置{label_str}!"
+                    )
+                # Increment past the limit so this block only fires once
+                if order_type == "tp":
+                    pos.tp_fail_count += 1
+                else:
+                    pos.sl_fail_count += 1
             return
 
         is_long = pos.side == "LONG"
@@ -622,14 +651,20 @@ class LivePositionMonitor:
                     f"  {label}: {price}"
                 )
         except Exception as e:
+            if order_type == "tp":
+                pos.tp_fail_count += 1
+                fail_count = pos.tp_fail_count
+            else:
+                pos.sl_fail_count += 1
+                fail_count = pos.sl_fail_count
             logger.error(
-                "❌ 自动补挂%s单失败 %s: %s — 仓位可能无%s保护!",
-                label, pos.symbol, e, label,
+                "❌ 自动补挂%s单失败 %s (第%d次): %s — 仓位可能无%s保护!",
+                label, pos.symbol, fail_count, e, label,
             )
             if self.notifier:
                 await self.notifier.send(
                     f"🚨 <b>严重警告</b>\n"
-                    f"  {pos.symbol} {label}单补挂失败\n"
+                    f"  {pos.symbol} {label}单补挂失败 (第{fail_count}次)\n"
                     f"  请立即手动设置{label}!"
                 )
 
@@ -1085,3 +1120,53 @@ class LivePositionMonitor:
                     "⚠️ WS 入场单 %s/%s 已%s",
                     symbol, order_id, exec_type,
                 )
+
+    async def handle_account_update(self, event: dict) -> None:
+        """Handle ACCOUNT_UPDATE from WebSocket user data stream (WS-first).
+
+        Updates in-memory position state in real-time without REST polling.
+        Binance ACCOUNT_UPDATE positions array (field 'P') keys:
+          s  = symbol
+          pa = position amount (positive=LONG, negative=SHORT, 0=closed)
+          ep = entry price
+          up = unrealized PnL
+          ps = position side (LONG/SHORT/BOTH)
+        """
+        positions_data = event.get("a", {}).get("P", [])
+        for p in positions_data:
+            symbol = p.get("s", "")
+            pos = self._positions.get(symbol)
+            if not pos:
+                continue
+
+            amt_str = p.get("pa", "0")
+            ep_str  = p.get("ep", "0")
+
+            try:
+                amt = float(amt_str)
+            except (ValueError, TypeError):
+                continue
+
+            if amt == 0:
+                # Position fully closed — mark as closed if not already
+                if not pos.closed and pos.entry_filled:
+                    logger.info(
+                        "⚡ WS 检测到仓位已关闭: %s（通过 ACCOUNT_UPDATE）",
+                        symbol,
+                    )
+                    pos.closed = True
+            else:
+                # Update live entry price if changed (e.g. after partial fill)
+                try:
+                    new_ep = Decimal(ep_str)
+                    if new_ep > 0 and new_ep != pos.entry_price:
+                        logger.debug(
+                            "⚡ WS 更新入场价: %s %s → %s",
+                            symbol, pos.entry_price, new_ep,
+                        )
+                        pos.entry_price = new_ep
+                except Exception:
+                    pass
+
+        if positions_data:
+            logger.debug("⚡ WS ACCOUNT_UPDATE 处理完成 (%d 仓位)", len(positions_data))

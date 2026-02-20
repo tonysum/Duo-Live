@@ -135,6 +135,7 @@ class LiveTrader:
 
                 # WebSocket user data stream
                 self.ws_stream.on_order_update = self.live_monitor.handle_order_update
+                self.ws_stream.on_account_update = self.live_monitor.handle_account_update
                 tasks.append(self.ws_stream.run_forever())
 
                 # Telegram bot
