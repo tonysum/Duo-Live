@@ -657,10 +657,19 @@ class LivePositionMonitor:
                         tick = f.tick_size
                         # Round down to nearest tick
                         rounded = (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
-                        result = rounded.normalize()
-                        # Normalize can produce "1E+2" notation; ensure plain string
-                        if result == result.to_integral_value():
-                            result = result.quantize(Decimal("1"))
+                        # Always quantize to tick's own decimal places to prevent
+                        # scientific notation (e.g. "4.52E-3") which Binance rejects
+                        # with -1111. tick.normalize() gives us the canonical exponent.
+                        tick_normalized = tick.normalize()
+                        tick_sign, tick_digits, tick_exp = tick_normalized.as_tuple()
+                        if tick_exp < 0:
+                            # e.g. tick=0.0001 → quantize to Decimal("0.0001")
+                            result = rounded.quantize(
+                                Decimal(10) ** tick_exp, rounding=ROUND_DOWN
+                            )
+                        else:
+                            # tick is an integer (e.g. 1, 10) → no decimals needed
+                            result = rounded.quantize(Decimal("1"), rounding=ROUND_DOWN)
                         logger.debug(
                             "_round_trigger_price %s: %s → %s (tick=%s)",
                             symbol, price, result, tick,
