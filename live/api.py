@@ -184,8 +184,7 @@ def create_app(trader) -> FastAPI:
     )
 
     # CORS - allow specific origins from env or localhost + all localhost variants
-    default_origins = "http://localhost:3000,http://127.0.0.1:3000,http://0.0.0.0:3000"
-    cors_env = os.environ.get("CORS_ORIGINS", default_origins)
+    cors_env = os.environ.get("CORS_ORIGINS", "*")
     allowed_origins = ["*"] if cors_env == "*" else cors_env.split(",")
     app.add_middleware(
         CORSMiddleware,
