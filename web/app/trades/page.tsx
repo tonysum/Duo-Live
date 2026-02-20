@@ -245,11 +245,29 @@ export default function TradesPage() {
                 <div className="p-3 border-t border-zinc-100 dark:border-zinc-800 flex items-center gap-4">
                   <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono flex items-center gap-1">
                     <ArrowUpRight className="w-3 h-3 text-emerald-500" />
-                    Entry: {selected.entry_price} ({selected.entry_time?.slice(11, 19)})
+                    Entry: {selected.entry_price} ({
+                      (() => {
+                        if (!selected.entry_time) return "N/A"
+                        const entryDay = selected.entry_time.slice(0, 10)
+                        const exitDay = selected.exit_time?.slice(0, 10)
+                        return entryDay === exitDay
+                          ? selected.entry_time.slice(11, 19)
+                          : selected.entry_time.slice(0, 19).replace("T", " ")
+                      })()
+                    })
                   </span>
                   <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono flex items-center gap-1">
                     <ArrowDownLeft className="w-3 h-3 text-red-500" />
-                    Exit: {selected.exit_price} ({selected.exit_time?.slice(11, 19)})
+                    Exit: {selected.exit_price} ({
+                      (() => {
+                        if (!selected.exit_time) return "N/A"
+                        const entryDay = selected.entry_time?.slice(0, 10)
+                        const exitDay = selected.exit_time.slice(0, 10)
+                        return entryDay === exitDay
+                          ? selected.exit_time.slice(11, 19)
+                          : selected.exit_time.slice(0, 19).replace("T", " ")
+                      })()
+                    })
                   </span>
                 </div>
               </>

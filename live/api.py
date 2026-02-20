@@ -123,7 +123,7 @@ class UpdateConfigRequest(BaseModel):
 def _pair_trades(raw_fills: list[dict]) -> list[dict]:
     """Pair entry and exit fills into complete round-trip trades.
 
-    Handles split exits correctly: if a position of 541 qty is closed in two
+    Handles split exits correctly: if a position of 581 qty is closed in two
     fills (185 + 396), they are merged into one trade with:
       - quantity-weighted average exit price
       - summed PnL
@@ -149,7 +149,7 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
 
         if abs(pnl) < 0.0001:
             # ── Entry fill ──────────────────────────────────────
-            # If there's an incomplete open position, finalize it first
+            # Finalize any incomplete open position for this symbol first
             if symbol in open_position:
                 op = open_position.pop(symbol)
                 if op["exits"]:
@@ -161,20 +161,22 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
                 "entry_price": price,
                 "entry_qty":   qty,
                 "entry_time":  ts_ms,
-                "exits":       [],   # list of {qty, price, pnl, time}
+                "exits":       [],
                 "exit_qty":    0.0,
             }
+
         else:
             # ── Exit fill ────────────────────────────────────────
             if symbol not in open_position:
-                # No matching entry in fetch window — record as-is
+                # Entry fill is outside the 1000-fill fetch window.
+                # Keep the record so PnL is visible; entry_time=0 means unknown.
                 pos_side = "SHORT" if side_raw == "BUY" else "LONG"
                 completed.append({
                     "symbol":      symbol,
                     "side":        pos_side,
                     "entry_price": 0.0,
                     "exit_price":  price,
-                    "entry_time":  ts_ms,
+                    "entry_time":  0,      # 0 = unknown, not the exit time
                     "exit_time":   ts_ms,
                     "quantity":    qty,
                     "pnl_usdt":    pnl,
@@ -376,12 +378,37 @@ def create_app(trader) -> FastAPI:
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/trades", response_model=list[LiveTradeItem])
-    async def get_trades(limit: int = Query(100, ge=1, le=1000)):
-        """Get completed trades (entry+exit paired) from Binance."""
+    async def get_trades(
+        limit: int = Query(100, ge=1, le=1000),
+        days: int = Query(30, ge=1, le=90),
+    ):
+        """Get completed trades (entry+exit paired) from Binance.
+
+        Fetches all fills from the last `days` days (default 30) using
+        startTime pagination, so entry fills are always within the window.
+        """
         try:
-            # Fetch enough raw fills to pair (entries + exits)
-            raw = await trader.client.get_user_trades(limit=limit * 3)
-            paired = _pair_trades(raw)
+            # Binance /fapi/v1/userTrades limits each request to max 7 days.
+            # Paginate in 7-day windows going backwards to cover `days` total.
+            now_ms   = int(datetime.now(timezone.utc).timestamp() * 1000)
+            start_ms = now_ms - days * 86_400_000
+            CHUNK_MS = 7 * 86_400_000  # 7 days in ms
+
+            all_fills: list[dict] = []
+            chunk_end = now_ms
+            while chunk_end > start_ms:
+                chunk_start = max(chunk_end - CHUNK_MS, start_ms)
+                batch = await trader.client.get_user_trades(
+                    start_time=chunk_start,
+                    end_time=chunk_end,
+                    limit=1000,
+                )
+                all_fills.extend(batch)
+                chunk_end = chunk_start - 1
+                if chunk_end <= start_ms:
+                    break
+
+            paired = _pair_trades(all_fills)
             result = []
             for t in paired[:limit]:
                 entry_ts = datetime.fromtimestamp(
