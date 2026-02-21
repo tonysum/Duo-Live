@@ -96,6 +96,7 @@ class LivePositionMonitor:
         self.strategy = strategy
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
+        self._poll_count: int = 0  # incremented each _check_all; used for periodic cleanup
 
         # exchange_info cache: {symbol: tick_size (Decimal)}
         # Refreshed every _EXCHANGE_INFO_TTL seconds to avoid per-poll API spam
@@ -272,6 +273,12 @@ class LivePositionMonitor:
         else:
             logger.info("🔄 无持仓需要恢复")
 
+        # Initial orphan cleanup at startup (covers orders left from previous session)
+        try:
+            await self._cancel_orphan_orders()
+        except Exception as e:
+            logger.warning("启动时孤立挂单清理失败: %s", e)
+
     async def run_forever(self):
         """Main monitoring loop."""
         self._running = True
@@ -290,6 +297,7 @@ class LivePositionMonitor:
 
     async def _check_all(self):
         """Check all tracked positions."""
+        self._poll_count += 1
         closed_symbols = []
         for symbol, pos in self._positions.items():
             if pos.closed:
@@ -302,6 +310,67 @@ class LivePositionMonitor:
 
         for sym in closed_symbols:
             del self._positions[sym]
+
+        # Every 10 poll cycles (~20 min at default interval) clean up orphan orders
+        if self._poll_count % 10 == 1:  # start at cycle 1, not 0
+            try:
+                await self._cancel_orphan_orders()
+            except Exception as e:
+                logger.warning("Orphan order cleanup error: %s", e)
+
+    async def _cancel_orphan_orders(self):
+        """Cancel algo orders that have no corresponding open position.
+
+        An order is considered orphaned when:
+        - Its symbol has no open position on the exchange, AND
+        - It is not tracked by the monitor (i.e. not a pending entry order)
+        """
+        try:
+            algo_orders = await self.client.get_open_algo_orders()
+        except Exception as e:
+            logger.debug("Orphan check: failed to fetch algo orders: %s", e)
+            return
+
+        if not algo_orders:
+            return
+
+        try:
+            all_pos = await self.client.get_position_risk()
+            open_symbols = {p.symbol for p in all_pos if float(p.position_amt) != 0}
+        except Exception as e:
+            logger.debug("Orphan check: failed to fetch positions: %s", e)
+            return
+
+        # Symbols actively tracked by the monitor (may not have exchange position yet)
+        tracked_symbols = set(self._positions.keys())
+
+        orphans_cancelled = 0
+        for ao in algo_orders:
+            sym = ao.symbol
+            if sym in open_symbols or sym in tracked_symbols:
+                continue  # has a live or in-flight position, not orphaned
+
+            # This algo order has no corresponding position — cancel it
+            try:
+                await self.client.cancel_algo_order(sym, algo_id=ao.algo_id)
+                orphans_cancelled += 1
+                logger.warning(
+                    "🗑️ 删除孤立挂单: %s algoId=%s type=%s triggerPrice=%s",
+                    sym, ao.algo_id, ao.order_type, ao.trigger_price,
+                )
+                if self.notifier:
+                    await self.notifier.send(
+                        f"⚠️ <b>废弃挂单已清除</b>\n"
+                        f"  {sym} {ao.order_type} 触发价={ao.trigger_price}\n"
+                        f"  (algoId={ao.algo_id})"
+                    )
+            except Exception as e:
+                logger.warning("删除孤立挂单失败 %s algoId=%s: %s", sym, ao.algo_id, e)
+
+        if orphans_cancelled:
+            logger.info("🧹 废弃挂单清除完成: 共删除 %d 单", orphans_cancelled)
+        else:
+            logger.debug("🧹 当前无孤立挂单")
 
     async def _check_position(self, pos: TrackedPosition):
         """Check a single position for order fills and triggers."""
