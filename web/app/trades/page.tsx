@@ -69,9 +69,26 @@ export default function TradesPage() {
     ]
     : []
 
+  const closedTrades = trades.filter((t) => t.exit_time && t.entry_time)
+
+  const totalPnl = trades.reduce((s, t) => s + t.pnl_usdt, 0)
+  const wins = trades.filter((t) => t.pnl_usdt > 0).length
+  const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0
+  const avgHoldMs =
+    closedTrades.length > 0
+      ? closedTrades.reduce((s, t) => {
+        const ms =
+          new Date(t.exit_time!).getTime() -
+          new Date(t.entry_time!).getTime()
+        return s + ms
+      }, 0) / closedTrades.length
+      : 0
+  const avgHoldH = avgHoldMs / 3_600_000
+
   return (
     <Layout>
-      <div className="space-y-4">
+      {/* Full-height flex column: fixed header items at top, list+chart fills rest */}
+      <div className="flex flex-col gap-3 h-full">
         <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
           <BarChart2 className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
           Trade History
@@ -80,6 +97,47 @@ export default function TradesPage() {
           </span>
         </h1>
 
+        {/* ── Summary stats ── */}
+        {trades.length > 0 && (
+          <div className="grid grid-cols-3 gap-3">
+            {/* Total PnL */}
+            <div className="bg-white dark:bg-zinc-900/70 border border-zinc-100 dark:border-zinc-800 rounded-xl px-4 py-3 shadow-sm">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">Total PnL</p>
+              <p
+                className={cn("text-base font-semibold font-mono", {
+                  "text-emerald-600 dark:text-emerald-400": totalPnl >= 0,
+                  "text-red-600 dark:text-red-400": totalPnl < 0,
+                })}
+              >
+                {totalPnl >= 0 ? "+" : ""}
+                {totalPnl.toFixed(2)} USDT
+              </p>
+            </div>
+            {/* Win Rate */}
+            <div className="bg-white dark:bg-zinc-900/70 border border-zinc-100 dark:border-zinc-800 rounded-xl px-4 py-3 shadow-sm">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">
+                Win Rate
+              </p>
+              <p className="text-base font-semibold font-mono text-zinc-900 dark:text-zinc-100">
+                {winRate.toFixed(1)}%
+                <span className="text-[11px] font-normal text-zinc-400 ml-1">
+                  ({wins}/{trades.length})
+                </span>
+              </p>
+            </div>
+            {/* Avg Hold Time */}
+            <div className="bg-white dark:bg-zinc-900/70 border border-zinc-100 dark:border-zinc-800 rounded-xl px-4 py-3 shadow-sm">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">
+                Avg Hold
+              </p>
+              <p className="text-base font-semibold font-mono text-zinc-900 dark:text-zinc-100">
+                {avgHoldH >= 24
+                  ? `${(avgHoldH / 24).toFixed(1)}d`
+                  : `${avgHoldH.toFixed(1)}h`}
+              </p>
+            </div>
+          </div>
+        )}
         {error && (
           <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
             <AlertCircle className="w-4 h-4 text-red-500" />
@@ -87,7 +145,7 @@ export default function TradesPage() {
           </div>
         )}
 
-        <div className="flex flex-col lg:flex-row gap-4" style={{ height: "calc(100vh - 200px)" }}>
+        <div className="flex flex-col lg:flex-row gap-4 flex-1 min-h-0">
           {/* Trade list */}
           <div
             className={cn(

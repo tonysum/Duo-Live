@@ -74,6 +74,9 @@ class LivePositionMonitor:
     matching Binance App behavior and preventing -2021 errors.
     """
 
+    # exchange_info refresh interval (4 hours)
+    _EXCHANGE_INFO_TTL: int = 4 * 3600
+
     def __init__(
         self,
         client: BinanceFuturesClient,
@@ -93,6 +96,11 @@ class LivePositionMonitor:
         self.strategy = strategy
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
+
+        # exchange_info cache: {symbol: tick_size (Decimal)}
+        # Refreshed every _EXCHANGE_INFO_TTL seconds to avoid per-poll API spam
+        self._tick_cache: dict[str, Any] = {}  # symbol → Decimal tick_size or int price_precision
+        self._tick_cache_ts: float = 0.0  # epoch seconds of last full refresh
 
     def track(
         self,
@@ -179,6 +187,20 @@ class LivePositionMonitor:
                 tp_algo_id=tp_algo_id,
                 sl_algo_id=sl_algo_id,
             )
+
+            # ── Restore TP/strength state from DB (prevents strong_tp_pct hard-reset) ──
+            if self.store:
+                saved = self.store.get_position_state(symbol)
+                if saved:
+                    tracked.current_tp_pct = saved["current_tp_pct"]
+                    tracked.strength = saved["strength"]
+                    tracked.evaluated_2h = saved["evaluated_2h"]
+                    tracked.evaluated_12h = saved["evaluated_12h"]
+                    logger.info(
+                        "🔄 已恢复 TP 状态: %s tp_pct=%s%% strength=%s",
+                        symbol, tracked.current_tp_pct, tracked.strength,
+                    )
+
             self._positions[symbol] = tracked
             recovered += 1
 
@@ -193,7 +215,8 @@ class LivePositionMonitor:
             if not tracked.tp_sl_placed and pos_risk.entry_price:
                 try:
                     entry_p = Decimal(str(pos_risk.entry_price))
-                    tp_pct = self.config.strong_tp_pct
+                    # Use persisted tp_pct if available, otherwise fall back to strong_tp_pct
+                    tp_pct = tracked.current_tp_pct
                     sl_pct = self.config.stop_loss_pct
 
                     if side == "SHORT":
@@ -518,6 +541,11 @@ class LivePositionMonitor:
 
         await self._cancel_tp_sl(pos)
         pos.closed = True
+        if self.store:
+            try:
+                self.store.delete_position_state(pos.symbol)
+            except Exception as e:
+                logger.debug("清除持仓 TP 状态失败: %s", e)
 
     async def _cancel_tp_sl(self, pos: TrackedPosition):
         """Cancel both TP and SL algo orders."""
@@ -672,51 +700,74 @@ class LivePositionMonitor:
     # Price rounding helper (tickSize-based)
     # ------------------------------------------------------------------
 
-    async def _round_trigger_price(self, symbol: str, price: Decimal) -> Decimal:
-        """Round a trigger price to the symbol's tickSize from PRICE_FILTER.
+    async def _get_cached_exchange_info(self) -> None:
+        """Refresh the tick_size cache if TTL has expired.
 
-        Falls back to pricePrecision if tickSize is not available.
-        The result is always normalized to strip trailing zeros, which prevents
-        Binance -1111 "Precision is over the maximum" errors.
+        Populates self._tick_cache[symbol] with a dict:
+            {'tick_size': Decimal, 'price_precision': int}
+        Runs once at startup and every _EXCHANGE_INFO_TTL seconds.
         """
-        info = await self.client.get_exchange_info()
-        for s in info.symbols:
-            if s.symbol == symbol:
-                # Prefer tickSize from PRICE_FILTER (definitive constraint)
+        import time
+        now = time.monotonic()
+        if now - self._tick_cache_ts < self._EXCHANGE_INFO_TTL and self._tick_cache:
+            return  # cache still valid
+
+        try:
+            info = await self.client.get_exchange_info()
+            new_cache: dict[str, Any] = {}
+            for s in info.symbols:
+                entry: dict[str, Any] = {"price_precision": s.price_precision, "tick_size": None}
                 for f in s.filters:
                     if (
                         f.filter_type.value == "PRICE_FILTER"
                         and f.tick_size is not None
                         and f.tick_size > 0
                     ):
-                        tick = f.tick_size
-                        # Round down to nearest tick
-                        rounded = (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
-                        # Always quantize to tick's own decimal places to prevent
-                        # scientific notation (e.g. "4.52E-3") which Binance rejects
-                        # with -1111. tick.normalize() gives us the canonical exponent.
-                        tick_normalized = tick.normalize()
-                        tick_sign, tick_digits, tick_exp = tick_normalized.as_tuple()
-                        if tick_exp < 0:
-                            # e.g. tick=0.0001 → quantize to Decimal("0.0001")
-                            result = rounded.quantize(
-                                Decimal(10) ** tick_exp, rounding=ROUND_DOWN
-                            )
-                        else:
-                            # tick is an integer (e.g. 1, 10) → no decimals needed
-                            result = rounded.quantize(Decimal("1"), rounding=ROUND_DOWN)
-                        logger.debug(
-                            "_round_trigger_price %s: %s → %s (tick=%s)",
-                            symbol, price, result, tick,
-                        )
-                        return result
-                # Fallback: use pricePrecision
-                rounded = self.executor._round_price(price, s.price_precision)
+                        entry["tick_size"] = f.tick_size
+                        break
+                new_cache[s.symbol] = entry
+            self._tick_cache = new_cache
+            self._tick_cache_ts = now
+            logger.debug("exchange_info cache refreshed (%d symbols)", len(new_cache))
+        except Exception as e:
+            logger.warning("exchange_info cache refresh failed: %s — using stale cache", e)
+
+    async def _round_trigger_price(self, symbol: str, price: Decimal) -> Decimal:
+        """Round a trigger price to the symbol's tickSize from PRICE_FILTER.
+
+        Uses a 4-hour in-memory cache to avoid per-poll full exchange_info requests.
+        Falls back to pricePrecision if tickSize is not available.
+        The result is always normalized to strip trailing zeros, which prevents
+        Binance -1111 "Precision is over the maximum" errors.
+        """
+        await self._get_cached_exchange_info()
+
+        entry = self._tick_cache.get(symbol)
+        if entry:
+            tick = entry.get("tick_size")
+            if tick is not None:
+                # Round down to nearest tick
+                rounded = (price / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+                tick_normalized = tick.normalize()
+                _sign, _digits, tick_exp = tick_normalized.as_tuple()
+                if tick_exp < 0:
+                    result = rounded.quantize(Decimal(10) ** tick_exp, rounding=ROUND_DOWN)
+                else:
+                    result = rounded.quantize(Decimal("1"), rounding=ROUND_DOWN)
                 logger.debug(
-                    "_round_trigger_price %s: %s → %s (pricePrecision=%d)",
-                    symbol, price, rounded, s.price_precision,
+                    "_round_trigger_price %s: %s → %s (tick=%s, cached)",
+                    symbol, price, result, tick,
                 )
-                return rounded
+                return result
+            # Fallback: cached pricePrecision
+            prec = entry.get("price_precision", 8)
+            rounded = self.executor._round_price(price, prec)
+            logger.debug(
+                "_round_trigger_price %s: %s → %s (pricePrecision=%d, cached)",
+                symbol, price, rounded, prec,
+            )
+            return rounded
+
         # Last resort: use executor's precision cache
         price_prec, _ = await self.executor._get_precision(symbol)
         return self.executor._round_price(price, price_prec)
@@ -784,9 +835,22 @@ class LivePositionMonitor:
                 pos.symbol, pos.strength, old_tp_pct, pos.current_tp_pct,
             )
 
-        # Replace TP order if changed
+        # Replace TP order if changed and persist new state to DB
         if pos.current_tp_pct != old_tp_pct:
             await self._replace_tp_order(pos)
+
+        # Always persist current TP state so crash-recovery respects it
+        if self.store and (pos.evaluated_2h or pos.evaluated_12h):
+            try:
+                self.store.save_position_state(
+                    symbol=pos.symbol,
+                    current_tp_pct=pos.current_tp_pct,
+                    strength=pos.strength,
+                    evaluated_2h=pos.evaluated_2h,
+                    evaluated_12h=pos.evaluated_12h,
+                )
+            except Exception as e:
+                logger.warning("持仓 TP 状态写入 DB 失败: %s", e)
 
     async def _replace_tp_order(self, pos: TrackedPosition):
         """Cancel old TP and place a new one with updated tp_pct."""

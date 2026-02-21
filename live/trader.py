@@ -484,12 +484,15 @@ class LiveTrader:
                 all_pos = await self.client.get_position_risk()
                 open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
-                # Count today's live trades
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                all_live = self.store.get_live_trades(limit=9999)
+                # Count today's live trades — push date filter to SQL; parse UTC properly
+                today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                today_live = self.store.get_live_trades(limit=9999, since_date=today_utc)
                 today_trades = sum(
-                    1 for t in all_live
-                    if t.timestamp and t.timestamp.startswith(today)
+                    1 for t in today_live
+                    if t.timestamp
+                    and datetime.fromisoformat(
+                        t.timestamp.replace("Z", "+00:00")
+                    ).astimezone(timezone.utc).strftime("%Y-%m-%d") == today_utc
                 )
 
                 await self.notifier.notify_daily_summary(

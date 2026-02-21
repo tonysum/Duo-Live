@@ -129,15 +129,43 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
       - summed PnL
       - exit_time of the last fill
 
-    Logic:
-      Entry fill: realizedPnl ~= 0  (opening position)
-      Exit fill:  realizedPnl != 0  (closing position, has PnL)
+    Entry/exit detection:
+      Uses positionSide + side combo (hedge mode) or realizedPnl fallback
+      (one-way mode where positionSide == "BOTH").
+
+      Hedge mode:  LONG side BUY  → open long entry
+                   LONG side SELL → close long exit
+                   SHORT side SELL → open short entry
+                   SHORT side BUY  → close short exit
+      One-way mode fallback: pnl ≈ 0 → entry, pnl != 0 → exit
     """
     fills = sorted(raw_fills, key=lambda f: int(f.get("time", 0)))
 
     # open_position[symbol] = accumulated position state
     open_position: dict[str, dict] = {}
     completed: list[dict] = []
+
+    def _is_entry(f: dict) -> bool:
+        """Return True if this fill opens a position."""
+        pos_side = f.get("positionSide", "BOTH")
+        side_raw = f.get("side", "")
+        if pos_side == "LONG":
+            return side_raw == "BUY"
+        if pos_side == "SHORT":
+            return side_raw == "SELL"
+        # One-way mode (positionSide == "BOTH") — fall back to pnl heuristic
+        return abs(float(f.get("realizedPnl", "0"))) < 0.0001
+
+    def _position_side(f: dict) -> str:
+        """Determine the logical side of the position this fill belongs to."""
+        pos_side = f.get("positionSide", "BOTH")
+        if pos_side == "LONG":
+            return "LONG"
+        if pos_side == "SHORT":
+            return "SHORT"
+        # One-way: opening side determined by the fill's side field
+        side_raw = f.get("side", "")
+        return "SHORT" if side_raw == "SELL" else "LONG"
 
     for f in fills:
         symbol   = f.get("symbol", "")
@@ -147,7 +175,7 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
         ts_ms    = int(f.get("time", 0))
         side_raw = f.get("side", "")   # BUY or SELL from Binance
 
-        if abs(pnl) < 0.0001:
+        if _is_entry(f):
             # ── Entry fill ──────────────────────────────────────
             # Finalize any incomplete open position for this symbol first
             if symbol in open_position:
@@ -157,7 +185,7 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
 
             open_position[symbol] = {
                 "symbol":      symbol,
-                "side":        "SHORT" if side_raw == "SELL" else "LONG",
+                "side":        _position_side(f),
                 "entry_price": price,
                 "entry_qty":   qty,
                 "entry_time":  ts_ms,
@@ -170,10 +198,16 @@ def _pair_trades(raw_fills: list[dict]) -> list[dict]:
             if symbol not in open_position:
                 # Entry fill is outside the 1000-fill fetch window.
                 # Keep the record so PnL is visible; entry_time=0 means unknown.
-                pos_side = "SHORT" if side_raw == "BUY" else "LONG"
+                pos_side = f.get("positionSide", "BOTH")
+                if pos_side == "LONG":
+                    pos_label = "LONG"
+                elif pos_side == "SHORT":
+                    pos_label = "SHORT"
+                else:
+                    pos_label = "SHORT" if side_raw == "BUY" else "LONG"
                 completed.append({
                     "symbol":      symbol,
-                    "side":        pos_side,
+                    "side":        pos_label,
                     "entry_price": 0.0,
                     "exit_price":  price,
                     "entry_time":  0,      # 0 = unknown, not the exit time
@@ -746,30 +780,47 @@ def create_app(trader) -> FastAPI:
         logger.info("WebSocket client connected (%d total)", len(ws_clients))
 
         try:
+            last_hash: str = ""
             while True:
-                # Send periodic status updates
+                # Build and send status update only when state has changed
                 try:
                     bal = await trader.client.get_account_balance()
                     all_pos = await trader.client.get_position_risk()
                     open_pos = [p for p in all_pos if float(p.position_amt) != 0]
 
-                    data = {
-                        "type": "status",
-                        "total_balance": bal["total_balance"],
-                        "unrealized_pnl": bal["unrealized_pnl"],
-                        "positions": [
-                            {
-                                "symbol": p.symbol,
-                                "side": "LONG" if float(p.position_amt) > 0 else "SHORT",
-                                "unrealized_pnl": float(p.unrealized_profit),
-                                "entry_price": float(p.entry_price),
-                                "quantity": abs(float(p.position_amt)),
-                            }
-                            for p in open_pos
-                        ],
-                    }
+                    pos_data = [
+                        {
+                            "symbol": p.symbol,
+                            "side": "LONG" if float(p.position_amt) > 0 else "SHORT",
+                            "unrealized_pnl": float(p.unrealized_profit),
+                            "entry_price": float(p.entry_price),
+                            "quantity": abs(float(p.position_amt)),
+                        }
+                        for p in open_pos
+                    ]
 
-                    await ws.send_json(data)
+                    # Compute a lightweight hash: balance rounded to 2dp + position symbols+PnL
+                    import hashlib, json as _json
+                    state_key = _json.dumps(
+                        {
+                            "bal": round(bal["total_balance"], 2),
+                            "upnl": round(bal["unrealized_pnl"], 4),
+                            "pos": [{k: v for k, v in p.items()} for p in pos_data],
+                        },
+                        sort_keys=True,
+                    )
+                    new_hash = hashlib.md5(state_key.encode()).hexdigest()
+
+                    if new_hash != last_hash:
+                        data = {
+                            "type": "status",
+                            "total_balance": bal["total_balance"],
+                            "unrealized_pnl": bal["unrealized_pnl"],
+                            "positions": pos_data,
+                        }
+                        await ws.send_json(data)
+                        last_hash = new_hash
+
                 except Exception as e:
                     logger.debug("WS status error: %s", e)
 
