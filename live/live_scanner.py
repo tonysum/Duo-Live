@@ -137,18 +137,17 @@ class LiveSurgeScanner:
         now = datetime.now(timezone.utc)
         result = LiveScanResult(timestamp=now, signals=[])
 
-        # 0. Invalidate daily cache if UTC date changed
+        # 0. Invalidate daily cache + symbol list if UTC date changed
         self._refresh_daily_cache_if_needed(now)
 
-        # 1. Refresh tradeable USDT symbols (picks up new listings/delistings)
-        self._usdt_symbols = None
+        # 1. Fetch tradeable USDT symbols (cached daily; refreshed in _refresh_daily_cache_if_needed)
         symbols = await self._get_usdt_symbols()
         result.symbols_scanned = len(symbols)
 
         # 2. Scan each symbol (with concurrency control)
         # Binance kline weight=5 per call, rate limit 2400/min.
-        # 300 symbols × 2 calls = 600 calls; semaphore=3 keeps burst safe.
-        semaphore = asyncio.Semaphore(3)
+        # Concurrency is tunable via config.scanner_concurrency (default 3).
+        semaphore = asyncio.Semaphore(self.config.scanner_concurrency)
 
         async def scan_one(symbol: str):
             async with semaphore:
@@ -245,15 +244,24 @@ class LiveSurgeScanner:
         return y_avg_hour_sell
 
     def _refresh_daily_cache_if_needed(self, now: datetime) -> None:
-        """Invalidate daily cache when UTC date changes."""
+        """Invalidate caches when UTC date changes.
+
+        Clears:
+        - daily kline cache (y_avg_hour_sell values)
+        - _seen_signals dedup set (allow re-signalling on a new day)
+        - _usdt_symbols list (pick up new listings / delistings)
+        """
         today = now.date()
         if self._daily_cache_date != today:
             if self._daily_cache:
                 logger.info(
-                    "UTC date changed to %s, clearing daily cache (%d entries)",
-                    today, len(self._daily_cache),
+                    "UTC date changed to %s — clearing daily cache (%d entries), "
+                    "dedup set (%d entries), symbol list",
+                    today, len(self._daily_cache), len(self._seen_signals),
                 )
             self._daily_cache.clear()
+            self._seen_signals.clear()   # E: reset dedup so new-day signals aren't blocked
+            self._usdt_symbols = None    # B: refresh symbol list once per day
             self._daily_cache_date = today
 
     async def _get_usdt_symbols(self) -> list[str]:

@@ -58,6 +58,9 @@ class LiveTradingConfig:
     surge_threshold: float = 10.0
     surge_max_multiple: float = 14008.0
     scan_interval_seconds: int = 3600  # 1 hour
+    # Binance kline weight=5/call, 2 calls/symbol, rate limit 2400/min.
+    # At 300 symbols: 300×2×5=3000 weight/scan. Keep concurrency low to stay safe.
+    scanner_concurrency: int = 3       # parallel symbol scans per cycle
 
     # ── Risk Filters ──────────────────────────────────────────────────
     enable_risk_filters: bool = True

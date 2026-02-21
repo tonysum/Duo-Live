@@ -23,7 +23,11 @@ _TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 class TelegramNotifier:
-    """Send trading notifications via Telegram bot."""
+    """Send trading notifications via Telegram bot.
+
+    Uses a shared persistent httpx.AsyncClient to avoid per-message
+    TLS handshake overhead (A).
+    """
 
     def __init__(
         self,
@@ -34,10 +38,26 @@ class TelegramNotifier:
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self.enabled = bool(self.bot_token and self.chat_id)
 
+        # Shared client — created lazily, reused across all send() calls
+        # This avoids a TLS handshake on every notification.
+        self._client: Optional[httpx.AsyncClient] = None
+
         if not self.enabled:
             logger.info("📵 Telegram 通知未配置 (跳过推送)")
         else:
             logger.info("📱 Telegram 通知已启用")
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared client, creating it lazily."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=10)
+        return self._client
+
+    async def close(self) -> None:
+        """Close the shared HTTP client. Call on shutdown."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def send(self, message: str) -> bool:
         """Send a message. Returns True if successful."""
@@ -53,15 +73,17 @@ class TelegramNotifier:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    return True
-                else:
-                    logger.warning("Telegram 发送失败: %s %s", resp.status_code, resp.text)
-                    return False
+            client = self._get_client()
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                return True
+            else:
+                logger.warning("Telegram 发送失败: %s %s", resp.status_code, resp.text)
+                return False
         except Exception as e:
             logger.warning("Telegram 发送异常: %s", e)
+            # Invalidate client so next call gets a fresh one
+            self._client = None
             return False
 
     def send_sync(self, message: str) -> bool:
@@ -113,19 +135,39 @@ class TelegramNotifier:
             f"  止损: {sl_price}"
         )
 
-    async def notify_tp_triggered(self, symbol: str, side: str):
-        """Take-profit triggered."""
-        await self.send(
-            f"🎯 <b>止盈触发</b> 💰\n"
-            f"  {symbol} {side}"
-        )
+    async def notify_tp_triggered(
+        self,
+        symbol: str,
+        side: str,
+        price: str = "",
+        pnl_usdt: str = "",
+    ):
+        """Take-profit triggered. (D: includes price and PnL)"""
+        lines = [f"🎯 <b>止盈触发</b> 💰\n  {symbol} {side}"]
+        if price:
+            lines.append(f"  平仓价: {price}")
+        if pnl_usdt:
+            val = float(pnl_usdt)
+            sign = "+" if val >= 0 else ""
+            lines.append(f"  盈亏: {sign}{pnl_usdt} USDT")
+        await self.send("\n".join(lines))
 
-    async def notify_sl_triggered(self, symbol: str, side: str):
-        """Stop-loss triggered."""
-        await self.send(
-            f"🛑 <b>止损触发</b>\n"
-            f"  {symbol} {side}"
-        )
+    async def notify_sl_triggered(
+        self,
+        symbol: str,
+        side: str,
+        price: str = "",
+        pnl_usdt: str = "",
+    ):
+        """Stop-loss triggered. (D: includes price and PnL)"""
+        lines = [f"🛑 <b>止损触发</b>\n  {symbol} {side}"]
+        if price:
+            lines.append(f"  平仓价: {price}")
+        if pnl_usdt:
+            val = float(pnl_usdt)
+            sign = "+" if val >= 0 else ""
+            lines.append(f"  盈亏: {sign}{pnl_usdt} USDT")
+        await self.send("\n".join(lines))
 
     async def notify_timeout_close(self, symbol: str, hours: int):
         """Max hold time exceeded, market close."""
@@ -143,7 +185,10 @@ class TelegramNotifier:
             f"  已停止开新仓"
         )
 
-    async def notify_signal(self, symbol: str, surge_ratio: str, price: str, accepted: bool, reason: str = ""):
+    async def notify_signal(
+        self, symbol: str, surge_ratio: str, price: str,
+        accepted: bool, reason: str = "",
+    ):
         """Signal detected (accepted or filtered)."""
         if accepted:
             await self.send(

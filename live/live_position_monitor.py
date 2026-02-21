@@ -473,7 +473,15 @@ class LivePositionMonitor:
                     pos.tp_triggered = True
                     logger.info("🎯 止盈触发: %s (algoId=%s)", pos.symbol, pos.tp_algo_id)
                     if self.notifier:
-                        await self.notifier.notify_tp_triggered(pos.symbol, pos.side)
+                        # REST path: we don't have the exact exit price, use TP target as estimate
+                        tp_price_str = ""
+                        if pos.entry_price and pos.current_tp_pct:
+                            is_long = pos.side == "LONG"
+                            mult = (1 + pos.current_tp_pct / 100) if is_long else (1 - pos.current_tp_pct / 100)
+                            tp_price_str = str(round(float(pos.entry_price) * mult, 6))
+                        await self.notifier.notify_tp_triggered(
+                            pos.symbol, pos.side, price=tp_price_str
+                        )
                     self._record_live_trade(
                         pos, event="tp",
                         entry_price=str(pos.entry_price or ""),
@@ -504,7 +512,10 @@ class LivePositionMonitor:
                     pos.sl_triggered = True
                     logger.info("🛑 止损触发: %s (algoId=%s)", pos.symbol, pos.sl_algo_id)
                     if self.notifier:
-                        await self.notifier.notify_sl_triggered(pos.symbol, pos.side)
+                        # REST path: SL exit price unknown, omit
+                        await self.notifier.notify_sl_triggered(
+                            pos.symbol, pos.side
+                        )
                     self._record_live_trade(
                         pos, event="sl",
                         entry_price=str(pos.entry_price or ""),
@@ -1211,7 +1222,11 @@ class LivePositionMonitor:
                     symbol, pos.side, realized_pnl,
                 )
                 if self.notifier:
-                    await self.notifier.notify_tp_triggered(symbol, pos.side)
+                    await self.notifier.notify_tp_triggered(
+                        symbol, pos.side,
+                        price=avg_price,
+                        pnl_usdt=realized_pnl,
+                    )
                 self._record_live_trade(
                     pos, "tp",
                     exit_price=avg_price,
@@ -1232,7 +1247,11 @@ class LivePositionMonitor:
                     symbol, pos.side, realized_pnl,
                 )
                 if self.notifier:
-                    await self.notifier.notify_sl_triggered(symbol, pos.side)
+                    await self.notifier.notify_sl_triggered(
+                        symbol, pos.side,
+                        price=avg_price,
+                        pnl_usdt=realized_pnl,
+                    )
                 self._record_live_trade(
                     pos, "sl",
                     exit_price=avg_price,

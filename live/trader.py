@@ -92,7 +92,7 @@ class LiveTrader:
         )
 
         # WebSocket user data stream (real-time fills)
-        self.ws_stream = BinanceUserStream(client=self.client)
+        self.ws_stream = BinanceUserStream(client=self.client, notifier=self.notifier)
 
         # Telegram bot for remote control
         from dotenv import load_dotenv

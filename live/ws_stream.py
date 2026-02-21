@@ -35,8 +35,20 @@ WS_BASE = "wss://fstream.binance.com/ws/"
 # Max WS connection duration per Binance spec
 MAX_CONNECTION_HOURS = 23  # reconnect before 24h limit
 
+# After this many consecutive reconnects without a clean session, alert via Telegram
+_DISCONNECT_ALERT_THRESHOLD = 3
+
 # Callback type: async def handler(event: dict) -> None
 EventCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
+
+
+class _ListenKeyExpired(Exception):
+    """Sentinel raised when Binance signals listenKey expiry.
+
+    Caught specifically in the inner message loop so we can break out and
+    reconnect immediately — without triggering the 5s/10s sleep in the
+    outer exception handlers.
+    """
 
 
 class BinanceUserStream:
@@ -52,11 +64,14 @@ class BinanceUserStream:
         self,
         client: BinanceFuturesClient,
         keepalive_interval: int = 30 * 60,  # 30 minutes (listenKey valid 60min)
+        notifier=None,  # TelegramNotifier (optional) for disconnect alerts
     ):
         self.client = client
         self.keepalive_interval = keepalive_interval
+        self.notifier = notifier
         self._listen_key: Optional[str] = None
         self._running = False
+        self._consecutive_disconnects: int = 0
 
         # Event callbacks (async)
         self.on_order_update: Optional[EventCallback] = None
@@ -82,6 +97,7 @@ class BinanceUserStream:
                     close_timeout=5,
                 ) as ws:
                     logger.info("🔌 WebSocket 已连接")
+                    self._consecutive_disconnects = 0  # reset on successful connect
 
                     # Start keepalive task
                     keepalive_task = asyncio.create_task(
@@ -105,6 +121,9 @@ class BinanceUserStream:
                             try:
                                 data = json.loads(raw_msg)
                                 await self._dispatch(data)
+                            except _ListenKeyExpired:
+                                # Immediate reconnect — don't fall into outer sleeps
+                                break
                             except json.JSONDecodeError:
                                 logger.warning("WS: 无法解析消息: %s", raw_msg[:200])
                     finally:
@@ -122,7 +141,24 @@ class BinanceUserStream:
             ) as e:
                 if not self._running:
                     break
-                logger.warning("🔌 WebSocket 断开: %s, 5s 后重连...", e)
+                self._consecutive_disconnects += 1
+                logger.warning(
+                    "🔌 WebSocket 断开 (第%d次): %s, 5s 后重连...",
+                    self._consecutive_disconnects, e,
+                )
+                # F: alert via Telegram after repeated disconnects
+                if (
+                    self._consecutive_disconnects >= _DISCONNECT_ALERT_THRESHOLD
+                    and self.notifier
+                ):
+                    try:
+                        await self.notifier.send(
+                            f"🔌 <b>WebSocket 持续断线</b>\n"
+                            f"  已连续断开 {self._consecutive_disconnects} 次\n"
+                            f"  REST 轮询延迟可达 120s，请检查网络"
+                        )
+                    except Exception:
+                        pass
                 await asyncio.sleep(5)
 
             except asyncio.CancelledError:
@@ -131,6 +167,7 @@ class BinanceUserStream:
             except Exception as e:
                 if not self._running:
                     break
+                self._consecutive_disconnects += 1
                 logger.error("🔌 WebSocket 异常: %s, 10s 后重连...", e)
                 await asyncio.sleep(10)
 
@@ -179,8 +216,7 @@ class BinanceUserStream:
                 await self.on_account_update(data)
 
         elif event_type == "listenKeyExpired":
-            logger.warning("🔌 listenKey 已过期, 将重新连接")
-            # Force reconnect by breaking out of the message loop
-            raise websockets.exceptions.ConnectionClosedError(
-                None, None
-            )
+            logger.warning("🔌 listenKey 已过期, 立即重连")
+            # Raise sentinel — caught in the inner for-loop to break immediately
+            # without triggering the outer 5s/10s sleep exception handlers
+            raise _ListenKeyExpired()
