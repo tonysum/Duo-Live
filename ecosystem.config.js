@@ -21,7 +21,8 @@ module.exports = {
         },
         {
             name: "duo-live-frontend",
-            script: ".next/standalone/server.js",
+            script: "bash",
+            args: "start.sh",
             cwd: "./web",
             env: {
                 PORT: 3000,
