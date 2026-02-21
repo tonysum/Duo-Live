@@ -9,7 +9,7 @@ tests/
 # Data
 data/*.db
 *.pdf
-logs/
+/logs/
 
 # Environment
 .env
