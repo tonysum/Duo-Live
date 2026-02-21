@@ -59,6 +59,7 @@ class LiveSurgeScanner:
         # Cache
         self._usdt_symbols: Optional[list[str]] = None
         self._seen_signals: set[str] = set()  # "SYMBOL:YYYY-MM-DD" dedup key (one per day)
+        self._sl_cooldown: set[str] = set()   # S: symbols blocked after SL today (same format)
 
         # Daily kline cache: symbol -> y_avg_hour_sell
         # Invalidated automatically when UTC date changes.
@@ -80,20 +81,16 @@ class LiveSurgeScanner:
             "LiveSurgeScanner started (threshold=%.1fx)",
             self.config.surge_threshold,
         )
-        self.console.print(
-            f"[bold cyan]🔍 Live Scanner started[/bold cyan] "
-            f"(threshold={self.config.surge_threshold}x, "
-            f"aligned to hourly boundaries)"
-        )
+        # 启动信息已由上方 logger.info 记录，无需重复
 
         while self.running:
             # Wait until next hour boundary (+5s buffer)
             now = datetime.now(timezone.utc)
             next_hour = (now + timedelta(hours=1)).replace(minute=0, second=5, microsecond=0)
             wait_seconds = (next_hour - now).total_seconds()
-            self.console.print(
-                f"[dim]⏳ Next scan at {next_hour.strftime('%H:%M:%S')} UTC "
-                f"(in {wait_seconds:.0f}s)[/dim]"
+            logger.debug(
+                "⏳ 下次扫描: %s UTC (%.0f秒后)",
+                next_hour.strftime("%H:%M:%S"), wait_seconds,
             )
             await asyncio.sleep(wait_seconds)
 
@@ -111,9 +108,9 @@ class LiveSurgeScanner:
                         new_signals += 1
 
                 if new_signals > 0:
-                    self.console.print(
-                        f"[green]📡 Scan complete: {new_signals} new signal(s) "
-                        f"({result.symbols_scanned} symbols, {result.errors} errors)[/green]"
+                    logger.info(
+                        "📡 扫描完成: %d 个新信号 (%d 个标的, %d 个错误)",
+                        new_signals, result.symbols_scanned, result.errors,
                     )
                 else:
                     logger.info(
@@ -122,11 +119,23 @@ class LiveSurgeScanner:
                     )
 
             except Exception as e:
-                logger.error("Scan cycle error: %s", e, exc_info=True)
-                self.console.print(f"[red]❌ Scan error: {e}[/red]")
+                logger.error("❌ 扫描周期错误: %s", e, exc_info=True)
 
     async def stop(self):
         self.running = False
+
+    def add_sl_cooldown(self, symbol: str) -> None:
+        """S: Block symbol from re-entering today after a stop-loss.
+
+        Adds the symbol to both _sl_cooldown and _seen_signals for today
+        so the next scan cycle won't re-queue it.  Resets at midnight UTC
+        together with the daily cache.
+        """
+        today = datetime.now(timezone.utc).date().isoformat()
+        key = f"{symbol}:{today}"
+        self._sl_cooldown.add(key)
+        self._seen_signals.add(key)
+        logger.info("🛎️ SL冷却: %s 今日不再入场", symbol)
 
     # ------------------------------------------------------------------
     # Core Scan Logic

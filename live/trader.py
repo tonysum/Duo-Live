@@ -89,6 +89,8 @@ class LiveTrader:
             notifier=self.notifier,
             store=self.store,
             strategy=self.strategy,
+            # S: after every SL exit, block same-day re-entry for that symbol
+            on_sl_triggered=self.scanner.add_sl_cooldown,
         )
 
         # WebSocket user data stream (real-time fills)

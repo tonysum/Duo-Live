@@ -24,40 +24,31 @@ export default function SignalsPage() {
   useEffect(() => {
     const fetchAll = () => {
       api
-        .getSignals(2000)
+        .getSignals(500)
         .then(setSignals)
         .catch((e) => setError(e.message))
       api.getTickers().then(setTickers).catch(() => { })
     }
     fetchAll()
-    const iv = setInterval(fetchAll, 10000)
+    const iv = setInterval(fetchAll, 60_000)  // signals only update hourly
     return () => clearInterval(iv)
   }, [])
 
-  // Sort & dedup
-  const deduped = useMemo(() => {
-    const sorted = [...signals].sort((a, b) => {
+  // Sort newest-first; accepted signals first within same day
+  const sorted = useMemo(() => {
+    return [...signals].sort((a, b) => {
       const dayA = a.timestamp.slice(0, 10)
       const dayB = b.timestamp.slice(0, 10)
       if (dayA !== dayB) return dayB.localeCompare(dayA)
-      // Same day: accepted first, then by surge_ratio
       if (a.accepted !== b.accepted) return a.accepted ? -1 : 1
       return b.surge_ratio - a.surge_ratio
     })
-
-    const seen = new Set<string>()
-    return sorted.filter((s) => {
-      const key = `${s.symbol}:${s.timestamp.slice(0, 10)}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
   }, [signals])
 
-  const totalPages = Math.max(1, Math.ceil(deduped.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
   const paged = useMemo(
-    () => deduped.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
-    [deduped, page]
+    () => sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [sorted, page]
   )
 
   // Reset page when data changes significantly
@@ -78,7 +69,7 @@ export default function SignalsPage() {
               <Radio className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
               Signal Events
               <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
-                ({deduped.length})
+                ({sorted.length})
               </span>
             </h1>
           </div>
@@ -110,7 +101,7 @@ export default function SignalsPage() {
             "overflow-hidden"
           )}
         >
-          {deduped.length === 0 ? (
+          {sorted.length === 0 ? (
             <div className="flex items-center justify-center py-16 text-sm text-zinc-400 dark:text-zinc-500">
               No signal data
             </div>
@@ -216,7 +207,7 @@ export default function SignalsPage() {
               {totalPages > 1 && (
                 <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-100 dark:border-zinc-800">
                   <span className="text-[11px] text-zinc-400">
-                    {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, deduped.length)} of {deduped.length}
+                    {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sorted.length)} of {sorted.length}
                   </span>
                   <div className="flex items-center gap-1">
                     <button

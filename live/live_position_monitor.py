@@ -86,6 +86,7 @@ class LivePositionMonitor:
         notifier=None,  # TelegramNotifier (optional)
         store=None,     # TradeStore (optional, for live trade recording)
         strategy: "Strategy | None" = None,
+        on_sl_triggered=None,  # S: callable(symbol: str) invoked on every SL exit
     ):
         self.client = client
         self.executor = executor
@@ -93,6 +94,7 @@ class LivePositionMonitor:
         self.poll_interval = poll_interval
         self.notifier = notifier
         self.store = store
+        self.on_sl_triggered = on_sl_triggered  # S
         self.strategy = strategy
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
@@ -516,6 +518,9 @@ class LivePositionMonitor:
                         await self.notifier.notify_sl_triggered(
                             pos.symbol, pos.side
                         )
+                    # S: notify scanner to block same-day re-entry
+                    if self.on_sl_triggered:
+                        self.on_sl_triggered(pos.symbol)
                     self._record_live_trade(
                         pos, event="sl",
                         entry_price=str(pos.entry_price or ""),
@@ -1252,6 +1257,9 @@ class LivePositionMonitor:
                         price=avg_price,
                         pnl_usdt=realized_pnl,
                     )
+                # S: notify scanner to block same-day re-entry
+                if self.on_sl_triggered:
+                    self.on_sl_triggered(symbol)
                 self._record_live_trade(
                     pos, "sl",
                     exit_price=avg_price,

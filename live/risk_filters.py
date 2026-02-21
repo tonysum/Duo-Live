@@ -123,10 +123,35 @@ class RiskFilters:
     ) -> FilterResult:
         """Run all enabled filters sequentially.
 
+        P: Klines needed by multiple filters are pre-fetched once and shared
+        to avoid redundant API calls when several filters are enabled.
+
         Returns on first rejection (fail-fast). Collects metrics from
         all filters that run.
         """
         all_metrics: dict = {}
+
+        # ── Pre-fetch shared klines (P) ─────────────────────────────────
+        # Filters that need 1h klines: buy_acceleration, consecutive_buy_ratio,
+        # buy_sell_ratio — all use a ~12-24h window.  Fetch 24h once.
+        need_klines = (
+            self.config.enable_buy_acceleration_filter
+            or self.config.enable_consecutive_buy_ratio_filter
+            or self.config.enable_buy_sell_ratio_filter
+            or self.config.enable_cvd_new_low_filter
+        )
+        _klines_cache: list | None = None
+        if need_klines:
+            try:
+                entry_ts = int(entry_datetime.timestamp() * 1000)
+                start_ts = entry_ts - 25 * 3600 * 1000  # 25h covers all consumers
+                _klines_cache = await self.client.get_klines(
+                    symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=25
+                )
+                logger.debug("Klines pre-fetched for %s: %d bars", symbol, len(_klines_cache))
+            except Exception as e:
+                logger.warning("Klines pre-fetch failed for %s: %s", symbol, e)
+                _klines_cache = None  # filters will fetch individually or pass
 
         checks = [
             (
@@ -143,7 +168,7 @@ class RiskFilters:
             ),
             (
                 self.config.enable_cvd_new_low_filter,
-                lambda: self._check_cvd_new_low(symbol, entry_datetime),
+                lambda: self._check_cvd_new_low(symbol, entry_datetime, klines=_klines_cache),
             ),
             (
                 self.config.enable_premium_realtime_filter,
@@ -151,15 +176,15 @@ class RiskFilters:
             ),
             (
                 self.config.enable_buy_acceleration_filter,
-                lambda: self._check_buy_acceleration(symbol, entry_datetime),
+                lambda: self._check_buy_acceleration(symbol, entry_datetime, klines=_klines_cache),
             ),
             (
                 self.config.enable_consecutive_buy_ratio_filter,
-                lambda: self._check_consecutive_buy_ratio(symbol, entry_datetime),
+                lambda: self._check_consecutive_buy_ratio(symbol, entry_datetime, klines=_klines_cache),
             ),
             (
                 self.config.enable_buy_sell_ratio_filter,
-                lambda: self._check_buy_sell_ratio(symbol, entry_datetime),
+                lambda: self._check_buy_sell_ratio(symbol, entry_datetime, klines=_klines_cache),
             ),
         ]
 
@@ -304,7 +329,8 @@ class RiskFilters:
             )
 
     async def _check_cvd_new_low(
-        self, symbol: str, entry_datetime: datetime
+        self, symbol: str, entry_datetime: datetime,
+        klines: list | None = None,  # P: pre-fetched klines from check_all
     ) -> FilterResult:
         """Check if CVD (Cumulative Volume Delta) is at lookback-period low.
 
@@ -317,10 +343,13 @@ class RiskFilters:
             lookback_ms = self.config.cvd_lookback_hours * 3600 * 1000
             start_ts = entry_ts - lookback_ms
 
-            klines = await self.client.get_klines(
-                symbol, "1h", start_time=start_ts, end_time=entry_ts,
-                limit=self.config.cvd_lookback_hours + 1,
-            )
+            if klines is None:
+                klines = await self.client.get_klines(
+                    symbol, "1h", start_time=start_ts, end_time=entry_ts,
+                    limit=self.config.cvd_lookback_hours + 1,
+                )
+            # Slice to requested lookback even if pre-fetched list is longer
+            klines = klines[-(self.config.cvd_lookback_hours + 1):]
 
             if len(klines) < 2:
                 return FilterResult(
@@ -416,7 +445,8 @@ class RiskFilters:
             )
 
     async def _check_buy_acceleration(
-        self, symbol: str, entry_datetime: datetime
+        self, symbol: str, entry_datetime: datetime,
+        klines: list | None = None,  # P: pre-fetched klines from check_all
     ) -> FilterResult:
         """Check buy volume acceleration (last 6h vs prior 18h).
 
@@ -427,9 +457,11 @@ class RiskFilters:
             entry_ts = int(entry_datetime.timestamp() * 1000)
             start_ts = entry_ts - 24 * 3600 * 1000
 
-            klines = await self.client.get_klines(
-                symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=24
-            )
+            if klines is None:
+                klines = await self.client.get_klines(
+                    symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=24
+                )
+            klines = klines[-24:]  # cap to 24 even if pre-fetched list is longer
 
             if len(klines) < 12:
                 return FilterResult(
@@ -472,7 +504,8 @@ class RiskFilters:
             )
 
     async def _check_consecutive_buy_ratio(
-        self, symbol: str, entry_datetime: datetime
+        self, symbol: str, entry_datetime: datetime,
+        klines: list | None = None,  # P: pre-fetched klines from check_all
     ) -> FilterResult:
         """Check consecutive hours of buy volume surge.
 
@@ -485,9 +518,11 @@ class RiskFilters:
             threshold = self.config.consecutive_buy_ratio_threshold
             required = self.config.consecutive_buy_ratio_hours
 
-            klines = await self.client.get_klines(
-                symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=12
-            )
+            if klines is None:
+                klines = await self.client.get_klines(
+                    symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=12
+                )
+            klines = klines[-12:]
 
             if len(klines) < required + 1:
                 return FilterResult(
@@ -530,7 +565,8 @@ class RiskFilters:
             )
 
     async def _check_buy_sell_ratio(
-        self, symbol: str, entry_datetime: datetime
+        self, symbol: str, entry_datetime: datetime,
+        klines: list | None = None,  # P: pre-fetched klines from check_all
     ) -> FilterResult:
         """Check buy/sell volume ratio in the 12h before entry.
 
@@ -542,9 +578,11 @@ class RiskFilters:
             entry_ts = int(entry_datetime.timestamp() * 1000)
             start_ts = entry_ts - 12 * 3600 * 1000
 
-            klines = await self.client.get_klines(
-                symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=12
-            )
+            if klines is None:
+                klines = await self.client.get_klines(
+                    symbol, "1h", start_time=start_ts, end_time=entry_ts, limit=12
+                )
+            klines = klines[-12:]
 
             if len(klines) < 2:
                 return FilterResult(
