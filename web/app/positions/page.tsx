@@ -190,9 +190,10 @@ export default function PositionsPage() {
                       <td className="px-4 py-3">
                         <span
                           className={cn("text-xs font-medium font-mono", {
-                            "text-emerald-600 dark:text-emerald-400": p.margin_ratio > 50,
-                            "text-yellow-600 dark:text-yellow-400": p.margin_ratio > 20 && p.margin_ratio <= 50,
-                            "text-red-600 dark:text-red-400": p.margin_ratio <= 20,
+                            // High margin_ratio = near liquidation = danger
+                            "text-red-600 dark:text-red-400": p.margin_ratio >= 80,
+                            "text-yellow-600 dark:text-yellow-400": p.margin_ratio >= 50 && p.margin_ratio < 80,
+                            "text-emerald-600 dark:text-emerald-400": p.margin_ratio < 50,
                           })}
                         >
                           {p.margin_ratio > 0 ? `${p.margin_ratio.toFixed(1)}%` : "—"}

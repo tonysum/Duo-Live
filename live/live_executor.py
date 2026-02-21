@@ -11,6 +11,7 @@ Automatically detects position mode (one-way vs hedge) and adapts positionSide.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
@@ -24,32 +25,45 @@ logger = logging.getLogger(__name__)
 class LiveOrderExecutor:
     """Execute live orders on Binance Futures with TP/SL."""
 
+    # Re-query position mode after this many seconds (handles live mode switches)
+    _POSITION_MODE_TTL: int = 3600
+
     def __init__(self, client: BinanceFuturesClient, leverage: int = 4):
         self.client = client
         self.leverage = leverage
-        self._precision_cache: dict[str, tuple[int, int]] = {}
+        self._precision_cache: dict[str, tuple[int, int]] = {}  # symbol → (price_prec, qty_prec)
+        self._precision_cache_loaded: bool = False  # True after first bulk load
         self._position_mode: bool | None = None  # True=hedge, False=one-way
+        self._position_mode_ts: float = 0.0  # epoch of last fetch
 
     async def _get_precision(self, symbol: str) -> tuple[int, int]:
-        """Get (price_precision, quantity_precision) for a symbol."""
-        if symbol in self._precision_cache:
-            return self._precision_cache[symbol]
+        """Get (price_precision, quantity_precision) for a symbol.
 
-        info = await self.client.get_exchange_info()
-        for s in info.symbols:
-            if s.symbol == symbol:
-                prec = (s.price_precision, s.quantity_precision)
-                self._precision_cache[symbol] = prec
-                return prec
-        raise ValueError(f"Symbol {symbol} not found in exchange info")
+        I: On first call, bulk-loads ALL symbols into cache with a single
+        exchange_info request, avoiding one request per unknown symbol.
+        """
+        if not self._precision_cache_loaded:
+            info = await self.client.get_exchange_info()
+            for s in info.symbols:
+                self._precision_cache[s.symbol] = (s.price_precision, s.quantity_precision)
+            self._precision_cache_loaded = True
+            logger.debug("精度缓存已加载: %d 个交易对", len(self._precision_cache))
+
+        prec = self._precision_cache.get(symbol)
+        if prec is None:
+            raise ValueError(f"Symbol {symbol} not found in exchange info")
+        return prec
 
     async def _get_position_side(self, side: str = "SHORT") -> str:
         """Get the correct positionSide based on account mode.
 
         Returns "SHORT"/"LONG" for hedge mode, "BOTH" for one-way mode.
+        J: Result is cached with a 1h TTL so live mode changes are picked up.
         """
-        if self._position_mode is None:
+        now = time.monotonic()
+        if self._position_mode is None or now - self._position_mode_ts > self._POSITION_MODE_TTL:
             self._position_mode = await self.client.get_position_mode()
+            self._position_mode_ts = now
             mode_name = "双向持仓 (Hedge)" if self._position_mode else "单向持仓 (One-way)"
             logger.info("📌 持仓模式: %s", mode_name)
         return side.upper() if self._position_mode else "BOTH"

@@ -9,6 +9,7 @@ import {
   HelpCircle,
   Menu,
   Briefcase,
+  ScrollText,
 } from "lucide-react"
 
 import { Home } from "lucide-react"
@@ -113,6 +114,9 @@ export default function Sidebar() {
                   </NavItem>
                   <NavItem href="/trades" icon={BarChart2}>
                     Trades
+                  </NavItem>
+                  <NavItem href="/logs" icon={ScrollText}>
+                    Logs
                   </NavItem>
                 </div>
               </div>

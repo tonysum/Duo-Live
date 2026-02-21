@@ -122,6 +122,7 @@ class TelegramBot:
             "/pos": self._cmd_positions,
             "/trades": self._cmd_trades,
             "/close": self._cmd_close,
+            "/cancel": self._cmd_cancel,
             "/help": self._cmd_help,
             "/start": self._cmd_help,
         }
@@ -163,6 +164,7 @@ class TelegramBot:
             "/positions — 持仓详情\n"
             "/trades — 最近交易\n"
             "/close &lt;SYMBOL&gt; — 强制平仓\n"
+            "/cancel &lt;SYMBOL&gt; — 撤销该币所有挂单 (不平仓)\n"
             "/help — 显示帮助"
         )
 
@@ -232,7 +234,7 @@ class TelegramBot:
             return f"❌ 获取持仓失败: {e}"
 
     async def _cmd_trades(self, args: list[str]) -> str:
-        """Show recent trades."""
+        """Show recent trades with PnL and prices. (K)"""
         if not self.trader or not self.trader.store:
             return "⚠️ 交易记录不可用"
 
@@ -247,11 +249,38 @@ class TelegramBot:
             for t in trades:
                 event_emoji = {
                     "entry": "🔹", "tp": "🎯", "sl": "🛑",
-                    "timeout": "⏰",
+                    "timeout": "⏰", "force": "⚡",
                 }.get(t.event, "•")
+
+                # PnL line (K: show realized profit/loss)
+                pnl_str = ""
+                if t.pnl_usdt is not None and t.event != "entry":
+                    sign = "+" if t.pnl_usdt >= 0 else ""
+                    pnl_emoji = "💰" if t.pnl_usdt >= 0 else "📉"
+                    pnl_str = f"  {pnl_emoji} PnL: <code>{sign}{t.pnl_usdt:.2f}</code> USDT\n"
+
+                # Price line
+                price_str = ""
+                if t.entry_price and t.exit_price:
+                    price_str = f"  价格: <code>{t.entry_price}</code> → <code>{t.exit_price}</code>\n"
+                elif t.entry_price:
+                    price_str = f"  入场: <code>{t.entry_price}</code>\n"
+
+                # Hold duration
+                hold_str = ""
+                if t.entry_time and t.exit_time:
+                    try:
+                        dt_in = datetime.fromisoformat(t.entry_time.replace("Z", "+00:00"))
+                        dt_out = datetime.fromisoformat(t.exit_time.replace("Z", "+00:00"))
+                        h = (dt_out - dt_in).total_seconds() / 3600
+                        hold_str = f"  持仓: {h:.1f}h\n"
+                    except Exception:
+                        pass
+
+                ts_str = (t.timestamp or "")[:16].replace("T", " ")
                 lines.append(
-                    f"{event_emoji} {t.symbol} {t.side} — {t.event}\n"
-                    f"  {t.timestamp or '?'}\n"
+                    f"{event_emoji} <b>{t.symbol}</b> {t.side} — {t.event} ({ts_str})\n"
+                    f"{price_str}{pnl_str}{hold_str}"
                 )
 
             return "\n".join(lines)
@@ -308,3 +337,31 @@ class TelegramBot:
 
         return f"⚠️ 未找到 {symbol} 可平仓仓位"
 
+    async def _cmd_cancel(self, args: list[str]) -> str:
+        """Cancel all algo orders (TP/SL) for a symbol without closing the position. (L)"""
+        if not args:
+            return "⚠️ 用法: /cancel BTCUSDT"
+
+        symbol = args[0].upper()
+        try:
+            algo_orders = await self.trader.client.get_open_algo_orders()
+            target = [o for o in algo_orders if o.symbol == symbol]
+            if not target:
+                return f"📭 {symbol} 无挂单可撤销"
+
+            cancelled = 0
+            failed = 0
+            for o in target:
+                try:
+                    await self.trader.client.cancel_algo_order(symbol, algo_id=o.algo_id)
+                    cancelled += 1
+                except Exception as e:
+                    logger.warning("撤销挂单失败 %s algoId=%s: %s", symbol, o.algo_id, e)
+                    failed += 1
+
+            parts = [f"✅ {symbol} 已撤销 {cancelled} 张挂单"]
+            if failed:
+                parts.append(f"❌ {failed} 张失败")
+            return "\n".join(parts)
+        except Exception as e:
+            return f"❌ 撤销失败: {e}"

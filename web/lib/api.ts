@@ -173,5 +173,20 @@ export const api = {
     post<{ enabled: boolean; message: string }>("/api/auto-trade", { enabled }),
   updateConfig: (config: Partial<Config>) =>
     post<Config & { message: string }>("/api/config", config),
+  getLogs: (lines = 200, level = "", search = "") =>
+    get<{ lines: string[]; total: number; path: string }>(
+      `/api/logs?lines=${lines}&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`
+    ),
   wsUrl: `${API_BASE.replace("http", "ws")}/ws/live`,
+  // wsLogsUrl is a function so it is evaluated at call time (client-side),
+  // avoiding the SSR localhost bake-in issue.
+  wsLogsUrl: () => {
+    const base = (process.env.NEXT_PUBLIC_API_URL ||
+      (typeof window !== "undefined"
+        ? `http://${window.location.hostname}:8899`
+        : "http://localhost:8899")
+    ).replace("http", "ws")
+    const token = process.env.NEXT_PUBLIC_WS_TOKEN
+    return `${base}/ws/logs${token ? `?token=${token}` : ""}`
+  },
 };

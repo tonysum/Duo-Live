@@ -761,7 +761,94 @@ def create_app(trader) -> FastAPI:
 
         raise HTTPException(404, detail=f"No open position found for {sym}")
 
-    # ── WebSocket ────────────────────────────────────────────────
+    # ── Logs API ─────────────────────────────────────────────────
+
+    def _get_log_path() -> str:
+        """Resolve the log file path (same logic as __main__.py)."""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, "logs", "duo-live.log")
+
+    def _tail_log(path: str, lines: int = 200, level: str = "", search: str = "") -> list[str]:
+        """Read last N lines from log file, optionally filtered."""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+        except FileNotFoundError:
+            return []
+
+        result = []
+        for line in reversed(all_lines):
+            s = line.rstrip()
+            if not s:
+                continue
+            if level and f"[{level.upper()}]" not in s:
+                continue
+            if search and search.lower() not in s.lower():
+                continue
+            result.append(s)
+            if len(result) >= lines:
+                break
+
+        return list(reversed(result))
+
+    @app.get("/api/logs")
+    async def get_logs(
+        lines: int = Query(200, ge=1, le=5000),
+        level: str = Query("", description="Filter by log level: DEBUG/INFO/WARNING/ERROR"),
+        search: str = Query("", description="Keyword filter (case-insensitive)"),
+    ):
+        """Return last N lines of the log file with optional filtering."""
+        path = _get_log_path()
+        log_lines = _tail_log(path, lines=lines, level=level, search=search)
+        return {"lines": log_lines, "total": len(log_lines), "path": path}
+
+    @app.websocket("/ws/logs")
+    async def websocket_logs(ws: WebSocket, token: str | None = None):
+        """WebSocket that streams new log lines in real time."""
+        expected_token = os.environ.get("WS_TOKEN", "")
+        if expected_token and token != expected_token:
+            await ws.accept()
+            await ws.send_json({"error": "Unauthorized"})
+            await ws.close(code=4004)
+            return
+
+        await ws.accept()
+        path = _get_log_path()
+
+        # Track file position
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            file_size = 0
+
+        # Send initial tail (last 100 lines)
+        initial = _tail_log(path, lines=100)
+        await ws.send_json({"type": "init", "lines": initial})
+
+        try:
+            while True:
+                await asyncio.sleep(1)
+                try:
+                    new_size = os.path.getsize(path)
+                except OSError:
+                    continue
+
+                if new_size > file_size:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(file_size)
+                        new_raw = f.read(new_size - file_size)
+                    file_size = new_size
+                    new_lines = [l.rstrip() for l in new_raw.splitlines() if l.strip()]
+                    if new_lines:
+                        await ws.send_json({"type": "append", "lines": new_lines})
+                elif new_size < file_size:
+                    # Log rotated — reset position and resend tail
+                    file_size = new_size
+                    rotated = _tail_log(path, lines=50)
+                    await ws.send_json({"type": "init", "lines": rotated})
+
+        except WebSocketDisconnect:
+            pass
 
     @app.websocket("/ws/live")
     async def websocket_live(ws: WebSocket, token: str | None = None):
