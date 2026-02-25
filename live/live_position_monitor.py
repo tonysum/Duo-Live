@@ -238,13 +238,14 @@ class LivePositionMonitor:
                     is_hedge = await self.client.get_position_mode()
                     pos_side = side if is_hedge else "BOTH"
 
+                    rounded_qty = await self._round_quantity(symbol, qty)
                     tp_sl_result = await self.executor.place_tp_sl(
                         symbol=symbol,
                         close_side=close_side_order,
                         pos_side=pos_side,
                         tp_price=str(tp_price),
                         sl_price=str(sl_price),
-                        quantity=qty,
+                        quantity=rounded_qty,
                         order_prefix=f"rc_{symbol[:6].lower()}",
                     )
                     if tp_sl_result.get("tp_order"):
@@ -735,13 +736,14 @@ class LivePositionMonitor:
             import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
+            rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
             new_order = await self.client.place_algo_order(
                 symbol=pos.symbol,
                 side=close_side,
                 positionSide=ps,
                 type=algo_type,
                 triggerPrice=str(price),
-                quantity=pos.quantity,
+                quantity=rounded_qty,
                 reduceOnly="true",
                 priceProtect="true",
                 workingType="CONTRACT_PRICE",
@@ -789,7 +791,8 @@ class LivePositionMonitor:
         """Refresh the tick_size cache if TTL has expired.
 
         Populates self._tick_cache[symbol] with a dict:
-            {'tick_size': Decimal, 'price_precision': int}
+            {'tick_size': Decimal, 'price_precision': int,
+             'step_size': Decimal, 'qty_precision': int}
         Runs once at startup and every _EXCHANGE_INFO_TTL seconds.
         """
         import time
@@ -801,7 +804,12 @@ class LivePositionMonitor:
             info = await self.client.get_exchange_info()
             new_cache: dict[str, Any] = {}
             for s in info.symbols:
-                entry: dict[str, Any] = {"price_precision": s.price_precision, "tick_size": None}
+                entry: dict[str, Any] = {
+                    "price_precision": s.price_precision,
+                    "qty_precision": s.quantity_precision,
+                    "tick_size": None,
+                    "step_size": None,
+                }
                 for f in s.filters:
                     if (
                         f.filter_type.value == "PRICE_FILTER"
@@ -809,7 +817,12 @@ class LivePositionMonitor:
                         and f.tick_size > 0
                     ):
                         entry["tick_size"] = f.tick_size
-                        break
+                    elif (
+                        f.filter_type.value == "LOT_SIZE"
+                        and f.step_size is not None
+                        and f.step_size > 0
+                    ):
+                        entry["step_size"] = f.step_size
                 new_cache[s.symbol] = entry
             self._tick_cache = new_cache
             self._tick_cache_ts = now
@@ -856,6 +869,40 @@ class LivePositionMonitor:
         # Last resort: use executor's precision cache
         price_prec, _ = await self.executor._get_precision(symbol)
         return self.executor._round_price(price, price_prec)
+
+    async def _round_quantity(self, symbol: str, quantity: str) -> str:
+        """Round a quantity string to the symbol's LOT_SIZE stepSize.
+
+        Prevents Binance -1111 "Precision is over the maximum" errors
+        when re-placing TP/SL orders with a raw quantity value.
+        """
+        await self._get_cached_exchange_info()
+
+        entry = self._tick_cache.get(symbol)
+        if entry:
+            step = entry.get("step_size")
+            if step is not None:
+                qty = Decimal(quantity)
+                rounded = (qty / step).to_integral_value(rounding=ROUND_DOWN) * step
+                step_normalized = step.normalize()
+                _sign, _digits, step_exp = step_normalized.as_tuple()
+                if step_exp < 0:
+                    result = rounded.quantize(Decimal(10) ** step_exp, rounding=ROUND_DOWN)
+                else:
+                    result = rounded.quantize(Decimal("1"), rounding=ROUND_DOWN)
+                logger.debug(
+                    "_round_quantity %s: %s → %s (step=%s)",
+                    symbol, quantity, result, step,
+                )
+                return str(result)
+            # Fallback: cached qty_precision
+            prec = entry.get("qty_precision", 8)
+            rounded = self.executor._round_qty(Decimal(quantity), prec)
+            return str(rounded)
+
+        # Last resort: use executor's precision cache
+        _, qty_prec = await self.executor._get_precision(symbol)
+        return str(self.executor._round_qty(Decimal(quantity), qty_prec))
 
     # ------------------------------------------------------------------
     # Dynamic TP (V2 — strength evaluation at 2h / 12h checkpoints)
@@ -983,13 +1030,14 @@ class LivePositionMonitor:
             import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
+            rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
             tp_order = await self.client.place_algo_order(
                 symbol=pos.symbol,
                 side=close_side,
                 positionSide=ps,
                 type="TAKE_PROFIT_MARKET",
                 triggerPrice=new_tp_str,
-                quantity=pos.quantity,
+                quantity=rounded_qty,
                 reduceOnly="true",
                 priceProtect="true",
                 workingType="CONTRACT_PRICE",
@@ -1050,13 +1098,14 @@ class LivePositionMonitor:
             import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
+            rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
             tp_order = await self.client.place_algo_order(
                 symbol=pos.symbol,
                 side=close_side,
                 positionSide=ps,
                 type="TAKE_PROFIT_MARKET",
                 triggerPrice=str(restore_price),
-                quantity=pos.quantity,
+                quantity=rounded_qty,
                 reduceOnly="true",
                 priceProtect="true",
                 workingType="CONTRACT_PRICE",

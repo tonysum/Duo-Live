@@ -228,6 +228,7 @@ class TestRePlaceSingleOrder:
         mon = _make_monitor(config)
         pos = _make_filled_pos(entry_price=Decimal("50000"), tp_pct=33.0)
         mon._round_trigger_price = AsyncMock(side_effect=lambda s, p: p)
+        mon._round_quantity = AsyncMock(side_effect=lambda s, q: q)
         mon.client.get_position_mode = AsyncMock(return_value=False)
 
         new_order = MagicMock()
@@ -250,6 +251,7 @@ class TestRePlaceSingleOrder:
             side="LONG", entry_price=Decimal("50000"),
         )
         mon._round_trigger_price = AsyncMock(side_effect=lambda s, p: p)
+        mon._round_quantity = AsyncMock(side_effect=lambda s, q: q)
         mon.client.get_position_mode = AsyncMock(return_value=False)
 
         new_order = MagicMock()
@@ -271,6 +273,7 @@ class TestRePlaceSingleOrder:
         old_tp_id = pos.tp_algo_id
 
         mon._round_trigger_price = AsyncMock(side_effect=lambda s, p: p)
+        mon._round_quantity = AsyncMock(side_effect=lambda s, q: q)
         mon.client.get_position_mode = AsyncMock(return_value=False)
         mon.client.place_algo_order = AsyncMock(side_effect=Exception("API error"))
 
