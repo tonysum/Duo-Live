@@ -136,12 +136,16 @@ class TestTPTriggerDetection:
 
     @pytest.mark.asyncio
     async def test_tp_cancelled_manual(self, config):
-        """TP disappears + position amt != 0 → manual cancel, re-place TP."""
+        """TP disappears + position amt != 0 → manual cancel, re-place TP.
+
+        Note: when both TP and SL disappear simultaneously (empty algo list),
+        both are detected and re-placed in the same cycle (if/if, not if/elif).
+        """
         mon = _make_monitor(config)
         pos = _make_filled_pos()
         mon._positions["BTCUSDT"] = pos
 
-        # TP algo not in open list
+        # No algo orders in open list (both TP and SL disappeared)
         mon.client.get_open_algo_orders = AsyncMock(return_value=[])
         # Position still exists on exchange
         pr = _mock_position_risk("BTCUSDT", -0.01)
@@ -156,7 +160,11 @@ class TestTPTriggerDetection:
 
         assert pos.tp_triggered is False
         assert pos.closed is False
-        mon._re_place_single_order.assert_called_once_with(pos, "tp")
+        # Both TP and SL should be re-placed when both disappear
+        assert mon._re_place_single_order.call_count == 2
+        calls = [c.args for c in mon._re_place_single_order.call_args_list]
+        assert (pos, "tp") in calls
+        assert (pos, "sl") in calls
 
 
 # ──────────────────────────────────────────────────────────────────

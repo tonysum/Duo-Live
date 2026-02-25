@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -415,9 +416,18 @@ class LivePositionMonitor:
             except BinanceAPIError as e:
                 logger.debug("Query entry order failed: %s", e)
 
-        # Skip TP/SL checks if entry not yet filled or TP/SL not yet placed
-        if not pos.entry_filled or not pos.tp_sl_placed:
+        # Skip further checks if entry not yet filled
+        if not pos.entry_filled:
             return
+
+        # ── 1.1. Retry deferred TP/SL if initial placement failed ──────
+        if not pos.tp_sl_placed:
+            logger.warning(
+                "⚠️ TP/SL 未挂出，重试: %s", pos.symbol,
+            )
+            await self._place_deferred_tp_sl(pos)
+            if not pos.tp_sl_placed:
+                return  # still failed, skip remaining checks
 
         # ── 1.5. Strategy-based position evaluation ─────────────
         if self.strategy:
@@ -507,7 +517,7 @@ class LivePositionMonitor:
                     )
                     await self._re_place_single_order(pos, "tp")
 
-            elif pos.sl_algo_id and not sl_still_open and not pos.sl_triggered:
+            if pos.sl_algo_id and not sl_still_open and not pos.sl_triggered:
                 # SL disappeared — verify via exchange position
                 exchange_amt = await self._get_exchange_position_amt(pos.symbol)
                 if exchange_amt == 0:
@@ -733,7 +743,6 @@ class LivePositionMonitor:
             is_hedge = await self.client.get_position_mode()
             ps = pos.side if is_hedge else "BOTH"
 
-            import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
@@ -752,8 +761,10 @@ class LivePositionMonitor:
 
             if order_type == "tp":
                 pos.tp_algo_id = new_order.algo_id
+                pos.tp_fail_count = 0  # reset on success
             else:
                 pos.sl_algo_id = new_order.algo_id
+                pos.sl_fail_count = 0  # reset on success
 
             logger.info(
                 "✅ 自动补挂%s单: %s @ %s (algoId=%s)",
@@ -1027,7 +1038,6 @@ class LivePositionMonitor:
             is_hedge = await self.client.get_position_mode()
             ps = pos.side if is_hedge else "BOTH"
 
-            import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
@@ -1095,7 +1105,6 @@ class LivePositionMonitor:
             is_hedge = await self.client.get_position_mode()
             ps = pos.side if is_hedge else "BOTH"
 
-            import uuid
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
