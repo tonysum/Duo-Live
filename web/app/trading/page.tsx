@@ -267,7 +267,7 @@ export default function TradingPage() {
         {/* Main layout */}
         <div
           className="flex flex-col lg:flex-row gap-4"
-          style={{ height: "calc(100vh - 280px)" }}
+
         >
           {/* Chart area */}
           <div

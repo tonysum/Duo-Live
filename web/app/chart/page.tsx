@@ -61,7 +61,7 @@ export default function ChartPage() {
 
   return (
     <Layout>
-      <div className="space-y-4" style={{ height: "calc(100vh - 140px)" }}>
+      <div className="flex flex-col gap-4 h-full">
         <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
           <LineChart className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
           Chart
@@ -79,7 +79,7 @@ export default function ChartPage() {
             "rounded-xl shadow-sm backdrop-blur-xl",
             "overflow-hidden"
           )}
-          style={{ height: "calc(100% - 48px)" }}
+
         >
           {/* Header */}
           <div className="p-3 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between flex-wrap gap-2">
