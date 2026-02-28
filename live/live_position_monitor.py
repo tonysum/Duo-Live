@@ -328,6 +328,8 @@ class LivePositionMonitor:
         An order is considered orphaned when:
         - Its symbol has no open position on the exchange, AND
         - It is not tracked by the monitor (i.e. not a pending entry order)
+        
+        Also detects and removes duplicate TP/SL orders for the same position.
         """
         try:
             algo_orders = await self.client.get_open_algo_orders()
@@ -348,6 +350,70 @@ class LivePositionMonitor:
         # Symbols actively tracked by the monitor (may not have exchange position yet)
         tracked_symbols = set(self._positions.keys())
 
+        # ── 1. Check for duplicate TP/SL orders ──
+        from collections import defaultdict
+        orders_by_symbol = defaultdict(list)
+        for ao in algo_orders:
+            if ao.symbol in open_symbols or ao.symbol in tracked_symbols:
+                orders_by_symbol[ao.symbol].append(ao)
+        
+        duplicates_cancelled = 0
+        for sym, orders in orders_by_symbol.items():
+            # Group by order type
+            tp_orders = [o for o in orders if o.order_type == "TAKE_PROFIT_MARKET"]
+            sl_orders = [o for o in orders if o.order_type == "STOP_MARKET"]
+            
+            # If multiple TP orders exist, keep only the first one
+            if len(tp_orders) > 1:
+                logger.error(
+                    "❌ 检测到重复的止盈单: %s (共%d个) — 保留第一个，取消其余",
+                    sym, len(tp_orders)
+                )
+                for extra in tp_orders[1:]:
+                    try:
+                        await self.client.cancel_algo_order(sym, algo_id=extra.algo_id)
+                        duplicates_cancelled += 1
+                        logger.info(
+                            "🗑️ 已取消重复的止盈单: %s (algoId=%s, 触发价=%s)",
+                            sym, extra.algo_id, extra.trigger_price
+                        )
+                    except Exception as e:
+                        logger.warning("取消重复止盈单失败: %s", e)
+                
+                # Update tracked position with the kept order
+                if sym in self._positions:
+                    self._positions[sym].tp_algo_id = tp_orders[0].algo_id
+            
+            # If multiple SL orders exist, keep only the first one
+            if len(sl_orders) > 1:
+                logger.error(
+                    "❌ 检测到重复的止损单: %s (共%d个) — 保留第一个，取消其余",
+                    sym, len(sl_orders)
+                )
+                for extra in sl_orders[1:]:
+                    try:
+                        await self.client.cancel_algo_order(sym, algo_id=extra.algo_id)
+                        duplicates_cancelled += 1
+                        logger.info(
+                            "🗑️ 已取消重复的止损单: %s (algoId=%s, 触发价=%s)",
+                            sym, extra.algo_id, extra.trigger_price
+                        )
+                    except Exception as e:
+                        logger.warning("取消重复止损单失败: %s", e)
+                
+                # Update tracked position with the kept order
+                if sym in self._positions:
+                    self._positions[sym].sl_algo_id = sl_orders[0].algo_id
+        
+        if duplicates_cancelled:
+            logger.warning("🧹 重复挂单清除完成: 共删除 %d 单", duplicates_cancelled)
+            if self.notifier:
+                await self.notifier.send(
+                    f"⚠️ <b>检测到重复挂单</b>\n"
+                    f"  已自动清除 {duplicates_cancelled} 个重复订单"
+                )
+
+        # ── 2. Cancel orphaned orders ──
         orphans_cancelled = 0
         for ao in algo_orders:
             sym = ao.symbol
@@ -474,6 +540,60 @@ class LivePositionMonitor:
         try:
             algo_orders = await self.client.get_open_algo_orders(pos.symbol)
             algo_ids = {o.algo_id for o in algo_orders}
+
+            # ── 2.1. Verify TP order direction is correct ──────────────
+            if pos.tp_algo_id and pos.tp_algo_id in algo_ids:
+                tp_order = next((o for o in algo_orders if o.algo_id == pos.tp_algo_id), None)
+                if tp_order:
+                    # Get actual position direction from exchange
+                    try:
+                        actual_qty = await self._get_exchange_position_amt(pos.symbol)
+                        if actual_qty != 0:
+                            is_long = actual_qty > 0
+                            correct_side = "SELL" if is_long else "BUY"
+                            
+                            if tp_order.side != correct_side:
+                                logger.error(
+                                    "❌ 检测到止盈单方向错误: %s (algoId=%s)\n"
+                                    "   持仓方向: %s, 止盈单方向: %s, 应该是: %s\n"
+                                    "   自动取消并重新创建正确的止盈单",
+                                    pos.symbol, pos.tp_algo_id,
+                                    "LONG" if is_long else "SHORT",
+                                    tp_order.side, correct_side
+                                )
+                                
+                                # Cancel wrong TP order
+                                try:
+                                    await self.client.cancel_algo_order(pos.symbol, algo_id=pos.tp_algo_id)
+                                    logger.info("🗑️ 已取消错误的止盈单: %s", pos.tp_algo_id)
+                                    pos.tp_algo_id = None
+                                    
+                                    # Update position side if needed
+                                    actual_side = "LONG" if is_long else "SHORT"
+                                    if pos.side != actual_side:
+                                        logger.warning(
+                                            "⚠️ 更正持仓方向: %s → %s",
+                                            pos.side, actual_side
+                                        )
+                                        pos.side = actual_side
+                                    
+                                    # Update quantity
+                                    pos.quantity = str(abs(actual_qty))
+                                    
+                                    # Re-place with correct direction
+                                    await self._re_place_single_order(pos, "tp")
+                                    
+                                    if self.notifier:
+                                        await self.notifier.send(
+                                            f"⚠️ <b>止盈单方向错误已修复</b>\n"
+                                            f"  {pos.symbol}\n"
+                                            f"  持仓: {actual_side}\n"
+                                            f"  已重新创建正确的止盈单"
+                                        )
+                                except Exception as e:
+                                    logger.error("❌ 修复错误止盈单失败: %s", e)
+                    except Exception as e:
+                        logger.warning("验证止盈单方向时出错: %s", e)
 
             tp_still_open = pos.tp_algo_id is not None and pos.tp_algo_id in algo_ids
             sl_still_open = pos.sl_algo_id is not None and pos.sl_algo_id in algo_ids
@@ -620,28 +740,257 @@ class LivePositionMonitor:
             logger.error("❌ 挂出 TP/SL 失败 %s: %s", pos.symbol, e)
 
     async def _force_close(self, pos: TrackedPosition):
-        """Force close a position with a market order and cancel TP/SL."""
-        close_side = "SELL" if pos.side == "LONG" else "BUY"
+        """Force close a position with a market order and cancel TP/SL.
+        
+        🔧 改进（从 AE Server 移植）：
+        1. 平仓前先取消所有未成交订单
+        2. 从交易所获取实际持仓数量和方向（避免程序记录不准确）
+        3. 动态获取数量精度并调整
+        4. 根据实际仓位方向决定平仓买卖方向
+        5. 支持分批平仓（保证金不足时）
+        """
+        symbol = pos.symbol
+        
+        # 🔧 步骤1：平仓前先取消所有未成交的止盈止损订单
+        logger.info(f"🔄 {symbol} 平仓前取消所有未成交订单...")
+        cancelled_orders = []  # 记录被取消的订单
+        try:
+            algo_orders = await self.client.get_open_algo_orders(symbol)
+            if algo_orders:
+                logger.info(f"📋 {symbol} 找到 {len(algo_orders)} 个未成交订单，准备取消")
+                for order in algo_orders:
+                    order_type = order.order_type
+                    order_id = order.algo_id
+                    trigger_price = order.trigger_price
+                    
+                    try:
+                        await self.client.cancel_algo_order(
+                            symbol=symbol,
+                            algo_id=order_id
+                        )
+                        cancelled_orders.append({
+                            'type': order_type,
+                            'id': order_id,
+                            'price': trigger_price
+                        })
+                        logger.info(f"✅ {symbol} 已取消订单: {order_type} (ID: {order_id}, 价格: {trigger_price})")
+                    except Exception as cancel_error:
+                        logger.error(f"❌ {symbol} 取消订单失败 (ID: {order_id}): {cancel_error}")
+            else:
+                logger.info(f"✅ {symbol} 没有未成交订单")
+        except Exception as cancel_all_error:
+            logger.error(f"❌ {symbol} 查询/取消订单失败: {cancel_all_error}")
+        
+        # 🔧 步骤2：从交易所获取实际持仓数量和方向（避免程序记录不准确）
+        try:
+            positions_info = await self.client.get_position_risk(symbol)
+            actual_position = None
+            for p in positions_info:
+                if p.symbol == symbol:
+                    actual_position = p
+                    break
+
+            if actual_position:
+                actual_amt = float(actual_position.position_amt)
+                quantity = abs(actual_amt)  # 取绝对值作为平仓数量
+                is_long_position = actual_amt > 0  # 正数=做多，负数=做空
+
+                logger.info(f"📊 {symbol} 从交易所获取实际持仓: 数量={actual_amt} (方向={'做多' if is_long_position else '做空'}, 记录数量: {pos.quantity})")
+            else:
+                quantity = float(pos.quantity)
+                is_long_position = pos.side == "LONG"  # 使用程序记录的方向
+                logger.warning(f"⚠️ {symbol} 无法获取实际持仓，使用程序记录数量: {quantity} (方向: {pos.side})")
+        except Exception as get_position_error:
+            quantity = float(pos.quantity)
+            is_long_position = pos.side == "LONG"
+            logger.warning(f"⚠️ {symbol} 获取实际持仓失败: {get_position_error}，使用程序记录数量: {quantity} (方向: {pos.side})")
+
+        # 🔧 步骤3：动态获取数量精度并调整（使用round而非int，避免丢失）
+        try:
+            info = await self.client.get_exchange_info()
+            symbol_info = None
+            for s in info.symbols:
+                if s.symbol == symbol:
+                    symbol_info = s
+                    break
+
+            if symbol_info:
+                # 查找 LOT_SIZE 过滤器
+                step_size = None
+                for f in symbol_info.filters:
+                    if f.filter_type.value == "LOT_SIZE" and f.step_size is not None:
+                        step_size = float(f.step_size)
+                        break
+                
+                if step_size:
+                    # 根据stepSize精度调整（使用round四舍五入，而非int向下截断）
+                    if step_size >= 1:
+                        quantity_adjusted = round(quantity / step_size) * step_size
+                        quantity_adjusted = int(quantity_adjusted)
+                        qty_precision = 0
+                    else:
+                        import math
+                        qty_precision = abs(int(math.log10(step_size)))
+                        # 四舍五入到stepSize的整数倍
+                        quantity_adjusted = round(quantity / step_size) * step_size
+                        quantity_adjusted = round(quantity_adjusted, qty_precision)
+
+                    logger.info(f"📏 {symbol} 数量精度调整: {quantity} → {quantity_adjusted} (stepSize={step_size})")
+                    quantity = quantity_adjusted
+                else:
+                    quantity = round(quantity, 3)
+            else:
+                quantity = round(quantity, 3)
+        except Exception as precision_error:
+            logger.warning(f"⚠️ {symbol} 获取精度失败: {precision_error}，使用默认精度")
+            quantity = round(quantity, 3)
+
+        # 🔧 步骤4：根据实际仓位方向决定平仓买卖方向
+        if is_long_position:
+            close_side = 'SELL'  # 做多平仓 = 卖出
+            logger.info(f"🔄 {symbol} 检测到做多仓位，将使用SELL订单平仓")
+        else:
+            close_side = 'BUY'   # 做空平仓 = 买入
+            logger.info(f"🔄 {symbol} 检测到做空仓位，将使用BUY订单平仓")
+
+        # 🔧 步骤5：执行平仓（先尝试带reduceOnly，如果失败则重试不带reduceOnly）
         try:
             is_hedge = await self.client.get_position_mode()
             ps = pos.side if is_hedge else "BOTH"
-            await self.client.place_market_close(
-                symbol=pos.symbol,
-                side=close_side,
-                quantity=pos.quantity,
-                position_side=ps,
-            )
-            logger.info("✅ 市价平仓成功: %s", pos.symbol)
-        except Exception as e:
-            logger.error("❌ 市价平仓失败 %s: %s", pos.symbol, e)
+            
+            # 先尝试带reduceOnly
+            try:
+                await self.client.place_market_close(
+                    symbol=symbol,
+                    side=close_side,
+                    quantity=str(quantity),
+                    position_side=ps,
+                )
+                logger.info("✅ 市价平仓成功: %s", symbol)
+            except BinanceAPIError as reduce_error:
+                if 'ReduceOnly Order is rejected' in str(reduce_error):
+                    logger.warning(f"⚠️ {symbol} reduceOnly平仓被拒绝，尝试普通市价单")
+                    # 重试：不带reduceOnly
+                    await self.client.place_order(
+                        symbol=symbol,
+                        side=close_side,
+                        positionSide=ps,
+                        type="MARKET",
+                        quantity=str(quantity),
+                    )
+                    logger.info("✅ 市价平仓成功（普通市价单）: %s", symbol)
+                elif 'Margin is insufficient' in str(reduce_error):
+                    # 🔧 步骤6：支持分批平仓（保证金不足时）
+                    logger.error(f"❌ {symbol} 保证金不足，尝试分批平仓")
+                    half_quantity = quantity / 2
+                    
+                    # 对分批数量也进行精度调整
+                    if 'step_size' in locals() and step_size:
+                        half_quantity_adjusted = round(half_quantity / step_size) * step_size
+                        if step_size >= 1:
+                            half_quantity_adjusted = int(half_quantity_adjusted)
+                        else:
+                            half_quantity_adjusted = round(half_quantity_adjusted, qty_precision)
+                        half_quantity = half_quantity_adjusted
+                        logger.info(f"📏 {symbol} 分批数量精度调整: {half_quantity}")
+                    else:
+                        half_quantity = round(half_quantity, 3)
 
+                    # 平仓一半
+                    await self.client.place_order(
+                        symbol=symbol,
+                        side=close_side,
+                        positionSide=ps,
+                        type="MARKET",
+                        quantity=str(half_quantity),
+                    )
+                    logger.info(f"✅ {symbol} 成功平仓一半仓位 ({half_quantity})，等待再次尝试")
+
+                    # 等待订单执行
+                    await asyncio.sleep(0.5)
+
+                    # 重新获取实际剩余持仓数量
+                    try:
+                        positions_info = await self.client.get_position_risk(symbol)
+                        actual_position = None
+                        for p in positions_info:
+                            if p.symbol == symbol:
+                                actual_position = p
+                                break
+
+                        if actual_position:
+                            remaining_amt = float(actual_position.position_amt)
+                            remaining_quantity = abs(remaining_amt)
+
+                            # 对剩余数量也进行精度调整
+                            if 'step_size' in locals() and step_size and remaining_quantity > 0:
+                                remaining_adjusted = round(remaining_quantity / step_size) * step_size
+                                if step_size >= 1:
+                                    remaining_adjusted = int(remaining_adjusted)
+                                else:
+                                    remaining_adjusted = round(remaining_adjusted, qty_precision)
+                                remaining_quantity = remaining_adjusted
+
+                            logger.info(f"📊 {symbol} 重新获取剩余持仓: {remaining_quantity}")
+
+                            if remaining_quantity > 0:
+                                # 平仓剩余仓位
+                                await self.client.place_order(
+                                    symbol=symbol,
+                                    side=close_side,
+                                    positionSide=ps,
+                                    type="MARKET",
+                                    quantity=str(remaining_quantity),
+                                )
+                                logger.info(f"✅ {symbol} 成功平仓剩余仓位 ({remaining_quantity})")
+                            else:
+                                logger.info(f"✅ {symbol} 所有仓位已平仓完毕")
+                        else:
+                            logger.warning(f"⚠️ {symbol} 无法获取剩余持仓信息，可能已全部平仓")
+
+                    except Exception as remaining_error:
+                        logger.error(f"❌ {symbol} 平仓剩余仓位失败: {remaining_error}")
+                        # 发送紧急通知（同时 Telegram + 邮件）
+                        if self.notifier:
+                            await self.notifier.send_critical_alert(
+                                "平仓失败 - 需要人工干预",
+                                f"{symbol} 分批平仓仍失败，请立即检查账户状态并手动平仓\n"
+                                f"已平仓: {half_quantity}\n"
+                                f"剩余仓位: 未知\n"
+                                f"错误信息: {remaining_error}"
+                            )
+                else:
+                    raise reduce_error
+                
+        except Exception as e:
+            logger.error("❌ 市价平仓失败 %s: %s", symbol, e)
+            # 发送紧急通知（同时 Telegram + 邮件）
+            if self.notifier:
+                await self.notifier.send_critical_alert(
+                    "平仓完全失败 - 紧急",
+                    f"{symbol} 所有平仓尝试都失败，请立即检查账户并手动平仓\n"
+                    f"建仓价格: {pos.entry_price}\n"
+                    f"持仓数量: {quantity}\n"
+                    f"杠杆: {self.config.leverage}x\n"
+                    f"最后错误: {e}"
+                )
+
+        # 取消剩余的TP/SL订单（如果还有）
         await self._cancel_tp_sl(pos)
+        
         pos.closed = True
         if self.store:
             try:
                 self.store.delete_position_state(pos.symbol)
             except Exception as e:
                 logger.debug("清除持仓 TP 状态失败: %s", e)
+        
+        # 记录平仓摘要（包含订单取消详情）
+        if cancelled_orders:
+            cancelled_str = "\n".join([f"  - {co['type']}: ID {co['id']}, 价格 {co['price']}" for co in cancelled_orders])
+            logger.info(f"📋 {symbol} 平仓完成，已取消订单:\n{cancelled_str}")
+        else:
+            logger.info(f"📋 {symbol} 平仓完成（无未成交订单）")
 
     async def _cancel_tp_sl(self, pos: TrackedPosition):
         """Cancel both TP and SL algo orders."""
@@ -658,12 +1007,18 @@ class LivePositionMonitor:
     # ------------------------------------------------------------------
 
     async def _get_exchange_position_amt(self, symbol: str) -> float:
-        """Check actual position amount on exchange. Returns 0 if no position."""
+        """Check actual position amount on exchange. 
+        
+        Returns signed position amount:
+        - Positive = LONG position
+        - Negative = SHORT position  
+        - Zero = No position
+        """
         try:
             positions = await self.client.get_position_risk(symbol)
             for p in positions:
                 if p.symbol == symbol:
-                    return abs(float(p.position_amt))
+                    return float(p.position_amt)
         except Exception as e:
             logger.warning("查询持仓失败 %s: %s — 保守视为仓位存在", symbol, e)
             return 1.0  # Fail-safe: assume position exists to avoid false close
@@ -705,6 +1060,53 @@ class LivePositionMonitor:
                 else:
                     pos.sl_fail_count += 1
             return
+
+        # ── Check if order already exists (prevent duplicate orders) ──
+        try:
+            algo_orders = await self.client.get_open_algo_orders(pos.symbol)
+            target_type = "TAKE_PROFIT_MARKET" if order_type == "tp" else "STOP_MARKET"
+            existing_orders = [o for o in algo_orders if o.order_type == target_type]
+            
+            if existing_orders:
+                # Order already exists, update our tracking
+                existing = existing_orders[0]
+                if order_type == "tp":
+                    if pos.tp_algo_id != existing.algo_id:
+                        logger.warning(
+                            "⚠️ 发现已存在的%s单: %s (algoId=%s) — 更新追踪ID",
+                            label_str, pos.symbol, existing.algo_id
+                        )
+                        pos.tp_algo_id = existing.algo_id
+                        pos.tp_fail_count = 0
+                    else:
+                        logger.debug("%s单已存在: %s (algoId=%s)", label_str, pos.symbol, existing.algo_id)
+                else:
+                    if pos.sl_algo_id != existing.algo_id:
+                        logger.warning(
+                            "⚠️ 发现已存在的%s单: %s (algoId=%s) — 更新追踪ID",
+                            label_str, pos.symbol, existing.algo_id
+                        )
+                        pos.sl_algo_id = existing.algo_id
+                        pos.sl_fail_count = 0
+                    else:
+                        logger.debug("%s单已存在: %s (algoId=%s)", label_str, pos.symbol, existing.algo_id)
+                
+                # If multiple orders exist, cancel extras
+                if len(existing_orders) > 1:
+                    logger.error(
+                        "❌ 检测到重复的%s单: %s (共%d个) — 取消多余订单",
+                        label_str, pos.symbol, len(existing_orders)
+                    )
+                    for extra in existing_orders[1:]:
+                        try:
+                            await self.client.cancel_algo_order(pos.symbol, algo_id=extra.algo_id)
+                            logger.info("🗑️ 已取消重复的%s单: %s", label_str, extra.algo_id)
+                        except Exception as e:
+                            logger.warning("取消重复订单失败: %s", e)
+                
+                return  # Order exists, no need to create
+        except Exception as e:
+            logger.warning("检查已存在订单时出错: %s — 继续创建新订单", e)
 
         is_long = pos.side == "LONG"
         close_side = "SELL" if is_long else "BUY"
@@ -1013,8 +1415,33 @@ class LivePositionMonitor:
         # Immediately clear stale algo ID so poll loop won't misdetect as triggered
         pos.tp_algo_id = None
 
-        # Calculate new TP price
-        is_long = pos.side == "LONG"
+        # Get actual position quantity and direction from exchange (in case of partial close)
+        try:
+            actual_qty = await self._get_exchange_position_amt(pos.symbol)
+            if actual_qty == 0:
+                logger.warning("⚠️ %s 实际持仓为0，跳过止盈单替换", pos.symbol)
+                return
+            
+            # Determine actual position direction from exchange
+            is_long = actual_qty > 0
+            actual_side = "LONG" if is_long else "SHORT"
+            
+            # Update tracked quantity and side to match reality
+            pos.quantity = str(abs(actual_qty))
+            if pos.side != actual_side:
+                logger.warning(
+                    "⚠️ %s 持仓方向不一致: 记录=%s, 实际=%s, 已更正",
+                    pos.symbol, pos.side, actual_side
+                )
+                pos.side = actual_side
+            
+            logger.debug("📊 %s 实际持仓: %s %s", pos.symbol, actual_side, pos.quantity)
+        except Exception as e:
+            logger.warning("获取实际持仓数量失败，使用记录的数量和方向: %s", e)
+            # Continue with tracked quantity and side as fallback
+            is_long = pos.side == "LONG"
+
+        # Calculate new TP price (is_long already determined from actual position above)
         tp_mult = (
             Decimal("1") + Decimal(str(pos.current_tp_pct)) / Decimal("100")
             if is_long
@@ -1080,7 +1507,31 @@ class LivePositionMonitor:
         if not pos.entry_price:
             return
 
-        is_long = pos.side == "LONG"
+        # Get actual position quantity and direction from exchange (in case of partial close)
+        try:
+            actual_qty = await self._get_exchange_position_amt(pos.symbol)
+            if actual_qty == 0:
+                logger.warning("⚠️ %s 实际持仓为0，跳过止盈单恢复", pos.symbol)
+                return
+            
+            # Determine actual position direction from exchange
+            is_long = actual_qty > 0
+            actual_side = "LONG" if is_long else "SHORT"
+            
+            # Update tracked quantity and side to match reality
+            pos.quantity = str(abs(actual_qty))
+            if pos.side != actual_side:
+                logger.warning(
+                    "⚠️ %s 恢复时持仓方向不一致: 记录=%s, 实际=%s, 已更正",
+                    pos.symbol, pos.side, actual_side
+                )
+                pos.side = actual_side
+            
+            logger.debug("📊 %s 恢复时实际持仓: %s %s", pos.symbol, actual_side, pos.quantity)
+        except Exception as e:
+            logger.warning("获取实际持仓数量失败，使用记录的数量和方向: %s", e)
+            # Continue with tracked quantity and side as fallback
+            is_long = pos.side == "LONG"
         # Fall back to the original TP percentage from config
         fallback_pct = self.config.strong_tp_pct
         tp_mult = (

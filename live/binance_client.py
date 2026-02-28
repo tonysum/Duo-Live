@@ -78,7 +78,7 @@ class BinanceFuturesClient:
         self,
         api_key: str | None = None,
         api_secret: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,  # 🔧 网络优化：增加超时时间 30s → 60s
     ):
         self.base_url = self.BASE_URL
         self.timeout = timeout
@@ -124,8 +124,9 @@ class BinanceFuturesClient:
         params["signature"] = signature
         return params
 
-    _MAX_RETRIES = 3
-    _RETRY_BACKOFF = (1, 2, 4)  # seconds
+    # 🔧 网络优化配置（从 AE Server 移植 + 增强）
+    _MAX_RETRIES = 5  # 增加重试次数：3 → 5
+    _RETRY_BACKOFF = (2, 4, 8, 16, 32)  # 更长的等待时间：[1,2,4] → [2,4,8,16,32]
 
     # Circuit breaker: global ban state (class-level, shared across all instances)
     _ban_until: float = 0.0  # Unix timestamp (seconds) when IP ban lifts

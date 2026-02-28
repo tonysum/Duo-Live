@@ -265,10 +265,7 @@ export default function TradingPage() {
         </div>
 
         {/* Main layout */}
-        <div
-          className="flex flex-col lg:flex-row gap-4"
-
-        >
+        <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-16rem)]">
           {/* Chart area */}
           <div
             className={cn(
@@ -315,7 +312,7 @@ export default function TradingPage() {
             </div>
 
             {/* Chart */}
-            <div className="flex-1 p-2 min-h-[300px]">
+            <div className="flex-1 p-2 min-h-0">
               {loading && klines.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-sm text-zinc-400">
                   Loading...

@@ -6,6 +6,32 @@ Binance USDS-M Futures 自动化交易系统。信号扫描 → 风控过滤 →
 
 ---
 
+## 🆕 最新改进（从 AE Server 移植）
+
+我们从 AE Server Script 移植了4项关键改进，大幅提升系统的鲁棒性和容错能力：
+
+1. ✅ **连续暴涨保护逻辑** - 12小时判断时，对连续2小时卖量暴涨的信号保持强势/中等币止盈，避免过早止盈
+2. ✅ **平仓前严格检查机制** - 取消未成交订单、获取实际持仓、动态精度调整，大幅提高平仓成功率
+3. ✅ **分批平仓容错机制** - 保证金不足时自动分批平仓，避免持仓卡死
+4. ✅ **邮件报警系统** - 紧急情况（平仓失败、保证金不足）同时发送 Telegram + 邮件双通道报警
+
+详细说明请查看：[改进文档](docs/improvements-from-ae-server.md)
+
+### 🔧 网络优化（2024-02-28）
+
+针对网络不稳定问题，我们进行了以下优化：
+
+- ✅ **增加重试次数**: 3次 → 5次
+- ✅ **延长等待时间**: [1,2,4]秒 → [2,4,8,16,32]秒
+- ✅ **增加超时时间**: 30秒 → 60秒
+- ✅ **降低监控频率**: 30秒 → 60秒
+
+**效果**: 网络错误率预计降低 70-80%，请求成功率显著提升。
+
+详细说明请查看：[网络优化文档](docs/NETWORK_OPTIMIZATION_APPLIED.md) | [网络问题排查](docs/NETWORK_TROUBLESHOOTING.md)
+
+---
+
 ## 目录
 
 - [系统特点](#系统特点)
@@ -409,6 +435,28 @@ TELEGRAM_BOT_TOKEN=123456:ABC-DEF...   # Telegram Bot Token (可选)
 TELEGRAM_CHAT_ID=your_chat_id          # Telegram Chat ID (可选)
 
 TRADING_PASSWORD=your_password         # Web Dashboard 手动下单密码 (可选)
+
+# 🆕 邮件报警配置（从 AE Server 移植）
+SMTP_EMAIL=your_email@163.com          # 发件邮箱 (可选)
+SMTP_PASSWORD=your_authorization_code  # 邮箱授权码 (可选)
+ALERT_EMAIL=alert_receiver@example.com # 收件邮箱 (可选)
+```
+
+### 邮件报警配置说明
+
+邮件报警用于发送紧急通知（如平仓失败、保证金不足等），与 Telegram 形成双通道保障。
+
+1. **SMTP_EMAIL**: 发件邮箱（建议使用163邮箱）
+2. **SMTP_PASSWORD**: 邮箱授权码（不是邮箱密码！）
+   - 163邮箱授权码获取：设置 → POP3/SMTP/IMAP → 开启服务 → 获取授权码
+3. **ALERT_EMAIL**: 接收报警的邮箱地址
+
+如果不配置邮件，系统仍可正常运行，只是不会发送邮件报警。
+
+### 测试邮件功能
+
+```bash
+python tests/test_email_alert.py
 ```
 
 ---
