@@ -54,15 +54,17 @@ class TelegramBot:
         self._running = True
         logger.info("🤖 Telegram Bot 命令监听已启动")
         backoff = 5  # seconds, grows on consecutive errors
+        min_poll_interval = 1.0  # Minimum 1 second between polls to avoid rate limit
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             while self._running:
+                poll_start = asyncio.get_event_loop().time()
                 try:
                     resp = await client.get(
                         f"{self._base_url}/getUpdates",
                         params={
                             "offset": self._offset,
-                            "timeout": 30,
+                            "timeout": 25,  # Reduced from 30 to 25
                             "allowed_updates": '["message"]',
                         },
                     )
@@ -90,11 +92,18 @@ class TelegramBot:
                 except asyncio.CancelledError:
                     break
                 except httpx.TimeoutException:
-                    continue  # Normal for long-polling
+                    # Normal for long-polling, but add small delay to avoid hammering
+                    await asyncio.sleep(0.5)
+                    continue
                 except Exception as e:
                     logger.warning("Telegram Bot 异常: %s", e)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60)
+                
+                # Ensure minimum interval between polls to avoid rate limit
+                poll_duration = asyncio.get_event_loop().time() - poll_start
+                if poll_duration < min_poll_interval:
+                    await asyncio.sleep(min_poll_interval - poll_duration)
 
     def stop(self):
         self._running = False

@@ -154,9 +154,11 @@ class LiveSurgeScanner:
         result.symbols_scanned = len(symbols)
 
         # 2. Scan each symbol (with concurrency control)
-        # Binance kline weight=5 per call, rate limit 2400/min.
-        # Concurrency is tunable via config.scanner_concurrency (default 3).
-        semaphore = asyncio.Semaphore(self.config.scanner_concurrency)
+        # Binance kline weight=5 per call, rate limit 2400/min (40/s).
+        # With 542 symbols × 2 calls = 1084 calls, we need ~27s to stay under limit.
+        # Reduce concurrency to 2 and add small delay between batches.
+        semaphore = asyncio.Semaphore(2)  # Reduced from 3 to 2
+        batch_delay = 0.05  # 50ms delay between requests
 
         async def scan_one(symbol: str):
             async with semaphore:
@@ -164,6 +166,8 @@ class LiveSurgeScanner:
                     signal = await self._scan_symbol(symbol, now)
                     if signal:
                         result.signals.append(signal)
+                    # Small delay to avoid rate limit
+                    await asyncio.sleep(batch_delay)
                 except Exception as e:
                     logger.debug("Error scanning %s: %s", symbol, e)
                     result.errors += 1
