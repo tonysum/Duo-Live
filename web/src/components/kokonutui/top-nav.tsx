@@ -19,6 +19,7 @@ const pageTitles: Record<string, string> = {
   "/signals": "Signals",
   "/chart": "Chart",
   "/settings": "Settings",
+  "/paper": "Paper Trading",
 }
 
 export default function TopNav() {

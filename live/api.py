@@ -259,11 +259,12 @@ def _finalize_trade(op: dict) -> dict:
 
 # ── App factory ──────────────────────────────────────────────────────
 
-def create_app(trader) -> FastAPI:
+def create_app(trader, *, paper_trading=None) -> FastAPI:
     """Create FastAPI app with trader reference.
 
     Args:
         trader: LiveTrader instance (shared, same process).
+        paper_trading: Optional DSXPaperTrading instance (for dsxtx mode).
     """
     app = FastAPI(
         title="Duo-Live Trading API",
@@ -933,5 +934,87 @@ def create_app(trader) -> FastAPI:
             if ws in ws_clients:
                 ws_clients.remove(ws)
             logger.info("WebSocket client disconnected (%d remaining)", len(ws_clients))
+
+    # ── Paper Trading endpoints ─────────────────────────────────────
+    # Instance stored on app.state.paper (set via param or /start)
+
+    app.state.paper = paper_trading  # may be None initially
+
+    def _get_paper():
+        return app.state.paper
+
+    @app.post("/api/paper/start")
+    async def paper_start(
+        symbols: Optional[list[str]] = None,
+    ):
+        """Start the paper trading subsystem."""
+        from .paper_trading import DSXPaperTrading
+        pt = _get_paper()
+        if pt and pt.is_running:
+            return {"status": "already_running", "message": "Paper trading is already running"}
+
+        pt = DSXPaperTrading(symbols=symbols)
+        pt.start()
+        app.state.paper = pt
+        return {"status": "ok", "message": "Paper trading started", "symbols": pt.symbols}
+
+    @app.post("/api/paper/stop")
+    async def paper_stop():
+        """Stop the paper trading subsystem."""
+        pt = _get_paper()
+        if not pt or not pt.is_running:
+            return {"status": "not_running", "message": "Paper trading is not running"}
+        pt.stop()
+        return {"status": "ok", "message": "Paper trading stopped"}
+
+    @app.get("/api/paper/status")
+    async def paper_status():
+        """Paper trading system status + per-symbol state machine."""
+        pt = _get_paper()
+        if not pt:
+            return {"running": False, "symbols": [], "state_info": {}}
+        return pt.get_status_data()
+
+    @app.get("/api/paper/stats")
+    async def paper_stats():
+        """Paper trading capital / win-rate / P&L statistics."""
+        pt = _get_paper()
+        if not pt:
+            return {"error": "Paper trading not initialized"}
+        return pt.paper_engine.get_stats()
+
+    @app.get("/api/paper/positions")
+    async def paper_positions():
+        """Paper trading open positions + pending orders."""
+        pt = _get_paper()
+        if not pt:
+            return {"positions": [], "pending": []}
+        return pt.get_positions_data()
+
+    @app.get("/api/paper/trades")
+    async def paper_trades():
+        """Paper trading completed trade history."""
+        pt = _get_paper()
+        if not pt:
+            return []
+        return pt.paper_engine.trade_history[-100:]
+
+    @app.get("/api/paper/signals")
+    async def paper_signals():
+        """Paper trading signal history."""
+        pt = _get_paper()
+        if not pt:
+            return []
+        return pt.signal_history[-100:]
+
+    @app.get("/api/paper/ws-status")
+    async def paper_ws_status():
+        """Paper trading WebSocket connection status per symbol."""
+        pt = _get_paper()
+        if not pt:
+            return {"connected": 0, "total": 0, "symbols": {}}
+        ws = pt.data_collector.get_ws_summary()
+        connected = sum(1 for v in ws.values() if v['status'] == 'connected')
+        return {"connected": connected, "total": len(ws), "symbols": ws}
 
     return app

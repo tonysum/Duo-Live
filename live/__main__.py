@@ -589,6 +589,57 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         trader.auto_trade_enabled = auto_trade
         asyncio.run(trader.start())
 
+    elif cmd == "dsxtx":
+        # python -m live dsxtx [--symbols SOL DOGE XRP] [--port 8899]
+        import uvicorn
+        from .api import create_app
+        from .paper_trading import DSXPaperTrading
+
+        load_dotenv()
+
+        # Parse symbols (collect all args after --symbols until next flag)
+        symbols = None
+        sym_args = []
+        found = False
+        for a in sys.argv[2:]:
+            if a == "--symbols":
+                found = True
+                continue
+            if found and a.startswith("--"):
+                break
+            if found:
+                sym_args.append(a.upper() + ("USDT" if not a.upper().endswith("USDT") else ""))
+        if sym_args:
+            symbols = sym_args
+
+        _, dsxtx_flags = _parse_flags(sys.argv[2:])
+        port = int(dsxtx_flags.get("port", "8899"))
+
+        print()
+        print("=" * 50)
+        print("  📄 Paper Trading Mode — DSXtx")
+        print("=" * 50)
+        print(f"  Symbols:  {len(symbols) if symbols else 'all default (33)'}")
+        print(f"  API port: {port}")
+        print()
+        print("  🚀 Starting...")
+        print()
+
+        # Create paper trading instance
+        pt = DSXPaperTrading(symbols=symbols)
+        pt.start()
+
+        # Create a minimal trader stub for the API
+        class _PaperTraderStub:
+            auto_trade_enabled = False
+            store = None
+            client = None
+            config = None  # Paper trading doesn't need live config
+            live_monitor = None
+
+        app = create_app(_PaperTraderStub(), paper_trading=pt)
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
     else:
         print(f"Unknown command: {cmd}")
         print()
@@ -599,6 +650,9 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("    --margin N            固定保证金 (USDT, 默认5)")
         print("    --loss-limit N        每日亏损限额 (USDT, 默认50)")
         print("    --auto-trade          启动时开启自动交易 (默认关闭)")
+        print("  dsxtx                   启动 DSXtx 模拟交易")
+        print("    --symbols S1 S2 ...   指定监控币种 (默认33个)")
+        print("    --port N              API 端口 (默认8899)")
         print("  status                  查看账户状态")
         print("  trades [N]              查看实盘交易记录 (默认50条)")
         print("  signals [N]             查看信号历史 (默认50条)")

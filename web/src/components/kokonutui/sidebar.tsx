@@ -8,6 +8,7 @@ import {
   Menu,
   Briefcase,
   ScrollText,
+  FileText,
 } from "lucide-react"
 
 import { Home } from "lucide-react"
@@ -131,6 +132,9 @@ export default function Sidebar() {
                   </NavItem>
                   <NavItem href="/chart" icon={LineChart}>
                     Chart
+                  </NavItem>
+                  <NavItem href="/paper" icon={FileText}>
+                    Paper Trading
                   </NavItem>
                 </div>
               </div>
