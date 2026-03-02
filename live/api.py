@@ -948,15 +948,24 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
         symbols: Optional[list[str]] = None,
     ):
         """Start the paper trading subsystem."""
+        import asyncio
         from .paper_trading import DSXPaperTrading
         pt = _get_paper()
         if pt and pt.is_running:
             return {"status": "already_running", "message": "Paper trading is already running"}
 
-        pt = DSXPaperTrading(symbols=symbols)
-        pt.start()
-        app.state.paper = pt
-        return {"status": "ok", "message": "Paper trading started", "symbols": pt.symbols}
+        try:
+            def _blocking_start():
+                p = DSXPaperTrading(symbols=symbols)
+                p.start()
+                return p
+
+            pt = await asyncio.to_thread(_blocking_start)
+            app.state.paper = pt
+            return {"status": "ok", "message": "Paper trading started", "symbols": pt.symbols}
+        except Exception as e:
+            logger.error("Paper trading start failed: %s", e)
+            return {"status": "error", "message": str(e)}
 
     @app.post("/api/paper/stop")
     async def paper_stop():
