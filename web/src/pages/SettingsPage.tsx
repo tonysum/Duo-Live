@@ -1,5 +1,3 @@
-"use client"
-
 import { useEffect, useState } from "react"
 import { api, Config } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -157,7 +155,6 @@ export default function SettingsPage() {
     return (
         <Layout>
             <div className="space-y-6 max-w-2xl">
-                {/* Header */}
                 <div>
                     <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
                         <Settings className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />

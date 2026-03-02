@@ -28,7 +28,6 @@ module.exports = {
             cwd: "./web",
             env: {
                 PORT: 3000,
-                HOSTNAME: "0.0.0.0",
             },
             restart_delay: 3000,
             max_restarts: 10,

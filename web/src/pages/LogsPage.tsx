@@ -1,5 +1,3 @@
-"use client"
-
 import { useEffect, useRef, useState, useCallback } from "react"
 import { api } from "@/lib/api"
 import Layout from "@/components/kokonutui/layout"
@@ -24,7 +22,6 @@ function getLevel(line: string): string {
     return "INFO"
 }
 
-// Highlight emoji/icons for key events
 function lineClass(line: string): string {
     const lv = getLevel(line)
     return LEVEL_COLORS[lv] ?? LEVEL_COLORS.INFO
@@ -65,12 +62,9 @@ export default function LogsPage() {
             return
         }
 
-        // Evaluate URL at runtime so we get the real server hostname (not SSR localhost)
         const wsUrl = api.wsLogsUrl()
         let ws: WebSocket
         let reconnectTimer: ReturnType<typeof setTimeout>
-        // alive flag: prevents StrictMode double-invoke from triggering a ghost reconnect
-        // when cleanup runs on a still-CONNECTING socket
         let alive = true
 
         function connect() {
@@ -113,7 +107,6 @@ export default function LogsPage() {
                 ws.onmessage = null
                 ws.onclose = null
                 ws.onerror = null
-                // Only call close() once actually connected; avoids "closed before established"
                 if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
                     ws.close()
                 }
@@ -136,7 +129,7 @@ export default function LogsPage() {
         if (!isLive) fetchStatic()
     }, [isLive, fetchStatic])
 
-    // Client-side filtering (for live mode — server already filters in static mode)
+    // Client-side filtering
     const displayed = lines.filter(line => {
         if (levelFilter && !line.includes(`[${levelFilter}]`)) return false
         if (search && !line.toLowerCase().includes(search.toLowerCase())) return false
@@ -167,7 +160,6 @@ export default function LogsPage() {
                         </span>
                     </h1>
 
-                    {/* WS status indicator */}
                     <div className="flex items-center gap-2">
                         {isLive && (
                             <span className={cn("flex items-center gap-1.5 text-xs font-medium", {
@@ -187,7 +179,6 @@ export default function LogsPage() {
 
                 {/* Toolbar */}
                 <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
-                    {/* Live toggle */}
                     <button
                         onClick={() => setIsLive(v => !v)}
                         className={cn(
@@ -201,7 +192,6 @@ export default function LogsPage() {
                         {isLive ? "实时跟踪" : "静态查看"}
                     </button>
 
-                    {/* Level filter */}
                     <div className="relative">
                         <select
                             value={levelFilter}
@@ -220,7 +210,6 @@ export default function LogsPage() {
                         <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 pointer-events-none" />
                     </div>
 
-                    {/* Search */}
                     <div className="relative flex-1 min-w-[160px]">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
                         <input
@@ -238,7 +227,6 @@ export default function LogsPage() {
                     </div>
 
                     <div className="ml-auto flex items-center gap-2">
-                        {/* Auto-scroll indicator */}
                         <button
                             onClick={() => {
                                 setAutoScroll(true)
@@ -256,7 +244,6 @@ export default function LogsPage() {
                             {autoScroll ? "跟随" : "跳底"}
                         </button>
 
-                        {/* Clear */}
                         <button
                             onClick={() => setLines([])}
                             title="清空显示"
@@ -265,7 +252,6 @@ export default function LogsPage() {
                             <Trash2 className="w-3.5 h-3.5" />
                         </button>
 
-                        {/* Download */}
                         <button
                             onClick={handleDownload}
                             title="下载日志"

@@ -1,5 +1,3 @@
-"use client"
-
 import {
   BarChart2,
   Crosshair,
@@ -13,14 +11,13 @@ import {
 } from "lucide-react"
 
 import { Home } from "lucide-react"
-import Link from "next/link"
+import { Link, useLocation } from "react-router-dom"
 import { useState, useEffect, useCallback } from "react"
-import { usePathname } from "next/navigation"
 import { api } from "@/lib/api"
 
 export default function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
-  const pathname = usePathname()
+  const { pathname } = useLocation()
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
 
   const checkHealth = useCallback(async () => {
@@ -54,7 +51,7 @@ export default function Sidebar() {
     const isActive = pathname === href
     return (
       <Link
-        href={href}
+        to={href}
         onClick={handleNavigation}
         className={`flex items-center px-3 py-2 text-sm rounded-md transition-colors ${isActive
           ? "bg-gray-100 dark:bg-[#1F1F23] text-gray-900 dark:text-white font-medium"
@@ -85,7 +82,7 @@ export default function Sidebar() {
       >
         <div className="h-full flex flex-col">
           <Link
-            href="/dashboard"
+            to="/dashboard"
             className="h-16 px-6 flex items-center border-b border-gray-200 dark:border-[#1F1F23]"
           >
             <div className="flex items-center gap-3">

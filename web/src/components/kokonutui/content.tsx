@@ -1,5 +1,3 @@
-"use client"
-
 import { useEffect, useState } from "react"
 import { api, Status, Position, LiveTrade } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -15,7 +13,7 @@ import {
   CreditCard,
   ArrowRight,
 } from "lucide-react"
-import Link from "next/link"
+import { Link } from "react-router-dom"
 
 function StatCard({
   label,
@@ -104,7 +102,6 @@ export default function Content() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
@@ -124,7 +121,6 @@ export default function Content() {
         </div>
       )}
 
-      {/* Stat cards row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Total Balance"
@@ -161,7 +157,6 @@ export default function Content() {
         />
       </div>
 
-      {/* Two column grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Current Positions */}
         <div className="bg-white dark:bg-[#0F0F12] rounded-xl flex flex-col border border-gray-200 dark:border-[#1F1F23]">
@@ -174,7 +169,7 @@ export default function Content() {
               </span>
             </h2>
             <Link
-              href="/positions"
+              to="/positions"
               className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
             >
               View all
@@ -240,7 +235,7 @@ export default function Content() {
           </div>
           <div className="p-2 border-t border-zinc-100 dark:border-zinc-800">
             <Link
-              href="/positions"
+              to="/positions"
               className={cn(
                 "w-full flex items-center justify-center gap-2",
                 "py-2 px-3 rounded-lg",
@@ -269,7 +264,7 @@ export default function Content() {
               </span>
             </h2>
             <Link
-              href="/trades"
+              to="/trades"
               className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
             >
               View all
@@ -340,7 +335,7 @@ export default function Content() {
           </div>
           <div className="p-2 border-t border-zinc-100 dark:border-zinc-800">
             <Link
-              href="/trades"
+              to="/trades"
               className={cn(
                 "w-full flex items-center justify-center gap-2",
                 "py-2 px-3 rounded-lg",

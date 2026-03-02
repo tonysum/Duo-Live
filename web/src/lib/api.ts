@@ -1,8 +1,6 @@
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== "undefined"
-    ? `http://${window.location.hostname}:8899`
-    : "http://localhost:8899");
+  import.meta.env.VITE_API_URL ||
+  `http://${window.location.hostname}:8899`;
 
 // ── Types ──────────────────────────────────────────────────────────
 export interface Status {
@@ -178,15 +176,12 @@ export const api = {
       `/api/logs?lines=${lines}&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`
     ),
   wsUrl: `${API_BASE.replace("http", "ws")}/ws/live`,
-  // wsLogsUrl is a function so it is evaluated at call time (client-side),
-  // avoiding the SSR localhost bake-in issue.
   wsLogsUrl: () => {
-    const base = (process.env.NEXT_PUBLIC_API_URL ||
-      (typeof window !== "undefined"
-        ? `http://${window.location.hostname}:8899`
-        : "http://localhost:8899")
+    const base = (
+      import.meta.env.VITE_API_URL ||
+      `http://${window.location.hostname}:8899`
     ).replace("http", "ws")
-    const token = process.env.NEXT_PUBLIC_WS_TOKEN
+    const token = import.meta.env.VITE_WS_TOKEN
     return `${base}/ws/logs${token ? `?token=${token}` : ""}`
   },
 };

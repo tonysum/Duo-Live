@@ -1,12 +1,8 @@
-"use client"
-
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import Image from "next/image"
 import { Bell, ChevronRight, Activity } from "lucide-react"
 import Profile01 from "./profile-01"
-import Link from "next/link"
+import { Link, useLocation } from "react-router-dom"
 import { ThemeToggle } from "../theme-toggle"
-import { usePathname } from "next/navigation"
 import { useState, useEffect, useCallback } from "react"
 import { api } from "@/lib/api"
 
@@ -26,7 +22,7 @@ const pageTitles: Record<string, string> = {
 }
 
 export default function TopNav() {
-  const pathname = usePathname()
+  const { pathname } = useLocation()
   const currentPage = pageTitles[pathname] || "Dashboard"
   const [autoTrade, setAutoTrade] = useState(false)
   const [toggling, setToggling] = useState(false)
@@ -36,7 +32,6 @@ export default function TopNav() {
     { label: currentPage },
   ]
 
-  // Sync auto-trade state from backend
   const syncState = useCallback(async () => {
     try {
       const res = await api.getAutoTrade()
@@ -72,7 +67,7 @@ export default function TopNav() {
             {index > 0 && <ChevronRight className="h-4 w-4 text-gray-500 dark:text-gray-400 mx-1" />}
             {item.href ? (
               <Link
-                href={item.href}
+                to={item.href}
                 className="text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
               >
                 {item.label}
@@ -126,7 +121,7 @@ export default function TopNav() {
         <DropdownMenu>
           <DropdownMenuTrigger className="focus:outline-none">
             <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full overflow-hidden bg-zinc-900 ring-2 ring-gray-200 dark:ring-zinc-800 cursor-pointer">
-              <Image
+              <img
                 src="/Duo Avatar.jpg"
                 alt="User avatar"
                 width={32}
