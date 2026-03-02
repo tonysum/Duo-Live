@@ -806,8 +806,11 @@ def create_app(trader) -> FastAPI:
     async def websocket_logs(ws: WebSocket, token: str | None = None):
         """WebSocket that streams new log lines in real time.
 
-        A concurrent receive task drains client messages (ping keepalives)
-        so the connection stays alive and disconnect is detected promptly.
+        Uses two concurrent tasks:
+        - _receive_loop: drains client messages (pings) and detects disconnect.
+          Does NOT write to the ws (avoids concurrent-write crashes).
+        - main loop: polls the log file, sends new lines, and sends a
+          heartbeat every ~20 s when no new data, keeping proxies alive.
         """
         expected_token = os.environ.get("WS_TOKEN", "")
         if expected_token and token != expected_token:
@@ -829,27 +832,35 @@ def create_app(trader) -> FastAPI:
         initial = _tail_log(path, lines=100)
         await ws.send_json({"type": "init", "lines": initial})
 
-        # ── Concurrent receive task: drain client pings + detect disconnect ──
+        # ── Concurrent receive task: drain client messages + detect disconnect ──
+        # IMPORTANT: never write to ws from this task (concurrent writes crash Starlette)
         disconnected = asyncio.Event()
 
         async def _receive_loop():
             try:
                 while True:
-                    msg = await ws.receive_json()
-                    # Respond to client pings with a pong
-                    if isinstance(msg, dict) and msg.get("type") == "ping":
-                        await ws.send_json({"type": "pong"})
-            except (WebSocketDisconnect, Exception):
+                    await ws.receive_text()  # drain; ignore content
+            except Exception:
                 disconnected.set()
 
         recv_task = asyncio.create_task(_receive_loop())
 
+        # ── Main send loop ──
+        HEARTBEAT_INTERVAL = 20  # seconds
+        ticks_since_send = 0
+
         try:
             while not disconnected.is_set():
                 await asyncio.sleep(1)
+                ticks_since_send += 1
+
                 try:
                     new_size = os.path.getsize(path)
                 except OSError:
+                    # Send heartbeat if file is missing for a while
+                    if ticks_since_send >= HEARTBEAT_INTERVAL:
+                        await ws.send_json({"type": "heartbeat"})
+                        ticks_since_send = 0
                     continue
 
                 if new_size > file_size:
@@ -860,11 +871,18 @@ def create_app(trader) -> FastAPI:
                     new_lines = [l.rstrip() for l in new_raw.splitlines() if l.strip()]
                     if new_lines:
                         await ws.send_json({"type": "append", "lines": new_lines})
+                        ticks_since_send = 0
                 elif new_size < file_size:
                     # Log rotated — reset position and resend tail
                     file_size = new_size
                     rotated = _tail_log(path, lines=50)
                     await ws.send_json({"type": "init", "lines": rotated})
+                    ticks_since_send = 0
+
+                # Server-side heartbeat keeps the connection alive through proxies
+                if ticks_since_send >= HEARTBEAT_INTERVAL:
+                    await ws.send_json({"type": "heartbeat"})
+                    ticks_since_send = 0
 
         except (WebSocketDisconnect, Exception):
             pass
