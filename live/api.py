@@ -804,7 +804,11 @@ def create_app(trader) -> FastAPI:
 
     @app.websocket("/ws/logs")
     async def websocket_logs(ws: WebSocket, token: str | None = None):
-        """WebSocket that streams new log lines in real time."""
+        """WebSocket that streams new log lines in real time.
+
+        A concurrent receive task drains client messages (ping keepalives)
+        so the connection stays alive and disconnect is detected promptly.
+        """
         expected_token = os.environ.get("WS_TOKEN", "")
         if expected_token and token != expected_token:
             await ws.accept()
@@ -825,8 +829,23 @@ def create_app(trader) -> FastAPI:
         initial = _tail_log(path, lines=100)
         await ws.send_json({"type": "init", "lines": initial})
 
+        # ── Concurrent receive task: drain client pings + detect disconnect ──
+        disconnected = asyncio.Event()
+
+        async def _receive_loop():
+            try:
+                while True:
+                    msg = await ws.receive_json()
+                    # Respond to client pings with a pong
+                    if isinstance(msg, dict) and msg.get("type") == "ping":
+                        await ws.send_json({"type": "pong"})
+            except (WebSocketDisconnect, Exception):
+                disconnected.set()
+
+        recv_task = asyncio.create_task(_receive_loop())
+
         try:
-            while True:
+            while not disconnected.is_set():
                 await asyncio.sleep(1)
                 try:
                     new_size = os.path.getsize(path)
@@ -847,8 +866,10 @@ def create_app(trader) -> FastAPI:
                     rotated = _tail_log(path, lines=50)
                     await ws.send_json({"type": "init", "lines": rotated})
 
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, Exception):
             pass
+        finally:
+            recv_task.cancel()
 
     @app.websocket("/ws/live")
     async def websocket_live(ws: WebSocket, token: str | None = None):
