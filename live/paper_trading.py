@@ -1005,9 +1005,25 @@ class DSXPaperTrading:
                 'base_price': sd.get('base_price'),
                 'alerts_count': len([a for a in self.price_alerts.get(sym, []) if a['active']]),
             }
+
+        # Calculate uptime
+        uptime_seconds = 0
+        uptime_display = "—"
+        if self.start_time:
+            delta = datetime.now(timezone.utc) - self.start_time
+            uptime_seconds = int(delta.total_seconds())
+            hours, remainder = divmod(uptime_seconds, 3600)
+            minutes, secs = divmod(remainder, 60)
+            if hours > 0:
+                uptime_display = f"{hours}h {minutes}m"
+            else:
+                uptime_display = f"{minutes}m {secs}s"
+
         return {
             'running': self.is_running,
             'start_time': self.start_time.isoformat() if self.start_time else None,
+            'uptime_seconds': uptime_seconds,
+            'uptime_display': uptime_display,
             'symbols': self.symbols,
             'state_info': state_info,
             'total_alerts': sum(len([a for a in al if a['active']]) for al in self.price_alerts.values()),

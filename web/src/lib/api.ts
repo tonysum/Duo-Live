@@ -167,6 +167,8 @@ export interface PaperSignal {
 export interface PaperStatus {
   running: boolean;
   start_time: string | null;
+  uptime_seconds: number;
+  uptime_display: string;
   symbols: string[];
   state_info: Record<string, { state: string; base_price: number | null; alerts_count: number }>;
   total_alerts: number;

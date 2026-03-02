@@ -180,7 +180,7 @@ export default function PaperTradingPage() {
 
                 {/* Stats Grid */}
                 {stats && !("error" in stats) && (
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
                         <StatCard
                             label="Capital"
                             value={`$${stats.current_capital.toLocaleString()}`}
@@ -215,6 +215,12 @@ export default function PaperTradingPage() {
                             value={wsStatus ? `${wsStatus.connected}/${wsStatus.total}` : "—"}
                             icon={wsStatus && wsStatus.connected > 0 ? Wifi : WifiOff}
                             color={wsStatus && wsStatus.connected > 0 ? "green" : "red"}
+                        />
+                        <StatCard
+                            label="Uptime"
+                            value={status?.uptime_display || "—"}
+                            icon={Clock}
+                            color="accent"
                         />
                     </div>
                 )}
