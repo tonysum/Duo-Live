@@ -55,7 +55,7 @@ export default function LogsPage() {
         setAutoScroll(atBottom)
     }, [])
 
-    // WebSocket live mode
+    // WebSocket live mode with keepalive ping + exponential backoff
     useEffect(() => {
         if (!isLive) {
             wsRef.current?.close()
@@ -65,7 +65,9 @@ export default function LogsPage() {
         const wsUrl = api.wsLogsUrl()
         let ws: WebSocket
         let reconnectTimer: ReturnType<typeof setTimeout>
+        let pingTimer: ReturnType<typeof setInterval>
         let alive = true
+        let retryDelay = 3000 // start 3s, exponential backoff up to 30s
 
         function connect() {
             if (!alive) return
@@ -73,7 +75,20 @@ export default function LogsPage() {
             ws = new WebSocket(wsUrl)
             wsRef.current = ws
 
-            ws.onopen = () => { if (alive) setWsStatus("connected") }
+            ws.onopen = () => {
+                if (!alive) return
+                setWsStatus("connected")
+                retryDelay = 3000 // reset backoff on successful connect
+
+                // Send a ping every 25s to keep the connection alive
+                // (most proxies/servers timeout at 30-60s of inactivity)
+                clearInterval(pingTimer)
+                pingTimer = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "ping" }))
+                    }
+                }, 25_000)
+            }
 
             ws.onmessage = (evt) => {
                 if (!alive) return
@@ -84,13 +99,17 @@ export default function LogsPage() {
                     } else if (data.type === "append") {
                         setLines(prev => [...prev, ...(data.lines ?? [])])
                     }
+                    // pong or other types are silently ignored
                 } catch { /* ignore */ }
             }
 
             ws.onclose = () => {
                 if (!alive) return
+                clearInterval(pingTimer)
                 setWsStatus("disconnected")
-                reconnectTimer = setTimeout(connect, 3000)
+                // Exponential backoff: 3s → 6s → 12s → 24s → 30s (cap)
+                reconnectTimer = setTimeout(connect, retryDelay)
+                retryDelay = Math.min(retryDelay * 2, 30_000)
             }
 
             ws.onerror = () => {
@@ -102,12 +121,13 @@ export default function LogsPage() {
         return () => {
             alive = false
             clearTimeout(reconnectTimer)
+            clearInterval(pingTimer)
             if (ws) {
                 ws.onopen = null
                 ws.onmessage = null
                 ws.onclose = null
                 ws.onerror = null
-                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
+                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                     ws.close()
                 }
             }
