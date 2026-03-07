@@ -29,9 +29,9 @@ class LiveTradingConfig:
 
     # ── V2 Strategy Parameters ──────────────────────────────────────────
     stop_loss_pct: float = 18.0
-    strong_tp_pct: float = 33.0
-    medium_tp_pct: float = 21.0
-    weak_tp_pct: float = 10.0
+    strong_tp_pct: float = 20.0
+    medium_tp_pct: float = 11.0
+    weak_tp_pct: float = 5.0
     max_hold_hours: int = 72
 
     # V2 early-stop

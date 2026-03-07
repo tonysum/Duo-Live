@@ -20,6 +20,41 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+# ── Lightweight TTL cache ────────────────────────────────────────────
+
+class _TTLCache:
+    """Simple in-memory TTL cache for async functions.
+
+    Avoids re-hitting Binance on rapid page switches.
+    Each key gets its own TTL.
+    """
+
+    def __init__(self):
+        self._store: dict[str, tuple[float, Any]] = {}  # key -> (expires_at, data)
+
+    def get(self, key: str) -> Any | None:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        expires_at, data = entry
+        if asyncio.get_event_loop().time() > expires_at:
+            del self._store[key]
+            return None
+        return data
+
+    def set(self, key: str, data: Any, ttl: float):
+        self._store[key] = (asyncio.get_event_loop().time() + ttl, data)
+
+    def invalidate(self, prefix: str = ""):
+        if not prefix:
+            self._store.clear()
+        else:
+            self._store = {k: v for k, v in self._store.items() if not k.startswith(prefix)}
+
+
+_cache = _TTLCache()
+
 # ── Pydantic response models ────────────────────────────────────────
 
 class StatusResponse(BaseModel):
@@ -294,6 +329,9 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
     @app.get("/api/status", response_model=StatusResponse)
     async def get_status():
         """Account overview: balance, P&L, position count."""
+        cached = _cache.get("status")
+        if cached is not None:
+            return cached
         now = datetime.now(timezone.utc)
         try:
             bal, daily_pnl, all_pos = await asyncio.gather(
@@ -303,7 +341,7 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
             )
             open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
-            return StatusResponse(
+            resp = StatusResponse(
                 mode="live",
                 total_balance=bal["total_balance"],
                 available_balance=bal["available_balance"],
@@ -313,12 +351,17 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                 auto_trade_enabled=trader.auto_trade_enabled,
                 timestamp=now.isoformat(),
             )
+            _cache.set("status", resp, ttl=3)
+            return resp
         except Exception as e:
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/positions", response_model=list[PositionItem])
     async def get_positions():
         """List open positions from exchange."""
+        cached = _cache.get("positions")
+        if cached is not None:
+            return cached
         try:
             # Concurrent fetch — cuts latency in half
             all_pos, acct = await asyncio.gather(
@@ -361,6 +404,7 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                     margin=margin,
                     margin_ratio=margin_ratio,
                 ))
+            _cache.set("positions", items, ttl=3)
             return items
         except Exception as e:
             raise HTTPException(500, detail=str(e))
@@ -368,6 +412,9 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
     @app.get("/api/orders")
     async def get_orders():
         """List all open orders (regular + algo/conditional)."""
+        cached = _cache.get("orders")
+        if cached is not None:
+            return cached
         try:
             # Concurrent fetch — cuts latency in half
             regular, algo = await asyncio.gather(
@@ -408,6 +455,7 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                 })
             # Sort by time descending
             items.sort(key=lambda x: x["time"], reverse=True)
+            _cache.set("orders", items, ttl=3)
             return items
         except Exception as e:
             raise HTTPException(500, detail=str(e))
@@ -422,6 +470,10 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
         Fetches all fills from the last `days` days (default 30) using
         startTime pagination, so entry fills are always within the window.
         """
+        cache_key = f"trades:{limit}:{days}"
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
             # Binance /fapi/v1/userTrades limits each request to max 7 days.
             # Paginate in 7-day windows going backwards to cover `days` total.
@@ -462,6 +514,7 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                     quantity=t["quantity"],
                     pnl_usdt=t["pnl_usdt"],
                 ))
+            _cache.set(cache_key, result, ttl=30)
             return result
         except Exception as e:
             raise HTTPException(500, detail=str(e))
@@ -469,6 +522,10 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
     @app.get("/api/signals", response_model=list[SignalItem])
     async def get_signals(limit: int = Query(100, ge=1, le=5000)):
         """Get all signal events."""
+        sig_cache_key = f"signals:{limit}"
+        cached = _cache.get(sig_cache_key)
+        if cached is not None:
+            return cached
         store = trader.store
         if not store:
             return []
@@ -486,6 +543,7 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
             for e in events
         ]
         result.sort(key=lambda s: (s.timestamp, s.surge_ratio), reverse=True)
+        _cache.set(sig_cache_key, result, ttl=10)
         return result
 
     @app.get("/api/config", response_model=ConfigResponse)

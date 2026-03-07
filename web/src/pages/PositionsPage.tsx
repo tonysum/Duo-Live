@@ -205,6 +205,12 @@ export default function PositionsPage() {
                                                 >
                                                     {p.unrealized_pnl >= 0 ? "+" : ""}
                                                     {p.unrealized_pnl.toFixed(4)}
+                                                    {p.margin > 0 && (
+                                                        <span className="ml-1 text-[10px] opacity-70">
+                                                            ({(p.unrealized_pnl / p.margin * 100) >= 0 ? "+" : ""}
+                                                            {(p.unrealized_pnl / p.margin * 100).toFixed(2)}%)
+                                                        </span>
+                                                    )}
                                                 </span>
                                             </td>
                                             <td className="px-4 py-3">
