@@ -537,7 +537,14 @@ class DSXStateManager:
                     lev = predictor.amplitude_levels.get(state['current_market_level'], {})
                     confirm = lev.get('confirm', 2.0)
                     target = lev.get('target', 3.0)
-                    sl_pct = lev.get('stop_loss_pct', 18.0)
+                    sl_pct = lev.get('stop_loss_pct', 4.0)
+                    leverage = lev.get('leverage', 1)
+                    level_name = lev.get('name', state['current_market_level'])
+
+                    logger.info(
+                        "📊 %s 振幅级别: %s | confirm=%.1f%% target=%.1f%% sl=%.1f%% leverage=%dx",
+                        symbol, level_name, confirm, target, sl_pct, leverage,
+                    )
 
                     for direction in ['long', 'short']:
                         if direction == 'long':
@@ -553,7 +560,8 @@ class DSXStateManager:
                             'type': 'price_alert', 'symbol': symbol,
                             'direction': direction,
                             'entry_price': entry, 'tp_price': tp, 'sl_price': sl,
-                            'force_close_hours': 26,
+                            'force_close_hours': predictor.max_holding_hours,
+                            'leverage': leverage,
                         })
 
             # ── State 4: Monitoring ──
@@ -610,6 +618,7 @@ class PaperTradingEngine:
                 'tp_price': signal['tp_price'],
                 'sl_price': signal['sl_price'],
                 'force_close_hours': signal['force_close_hours'],
+                'leverage': signal.get('leverage', 1),
                 'created_at': datetime.now(timezone.utc),
                 'size_usdt': self.capital * self.POSITION_SIZE_PCT,
             }
@@ -661,7 +670,8 @@ class PaperTradingEngine:
                     remaining.append(order)
                     continue
 
-                qty = order['size_usdt'] / order['entry_price']
+                leverage = order.get('leverage', 1)
+                qty = (order['size_usdt'] * leverage) / order['entry_price']
                 pos = {
                     'symbol': symbol,
                     'direction': order['direction'],
@@ -670,6 +680,7 @@ class PaperTradingEngine:
                     'tp_price': order['tp_price'],
                     'sl_price': order['sl_price'],
                     'force_close_hours': order['force_close_hours'],
+                    'leverage': leverage,
                     'size_usdt': order['size_usdt'],
                     'qty': qty,
                     '_new_this_tick': True,
@@ -678,9 +689,9 @@ class PaperTradingEngine:
                 self.capital -= order['size_usdt']
                 self._dirty = True
                 logger.info(
-                    "✅ Paper open: %s %s @$%.4f qty:%.4f size:$%.0f",
+                    "✅ Paper open: %s %s @$%.4f qty:%.4f lev:%dx size:$%.0f",
                     symbol, order['direction'].upper(),
-                    order['entry_price'], qty, order['size_usdt'],
+                    order['entry_price'], qty, leverage, order['size_usdt'],
                 )
             else:
                 remaining.append(order)
