@@ -638,6 +638,9 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                 for k in klines
             ]
         except Exception as e:
+            msg = str(e).lower()
+            if "invalid symbol" in msg or "symbol" in msg:
+                raise HTTPException(404, detail=f"该币种不在交易所: {symbol.upper()}")
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/ticker/{symbol}")
@@ -647,6 +650,9 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
             ticker = await trader.client.get_ticker_price(symbol.upper())
             return {"symbol": ticker.symbol, "price": float(ticker.price)}
         except Exception as e:
+            msg = str(e).lower()
+            if "invalid symbol" in msg or "symbol" in msg:
+                raise HTTPException(404, detail=f"该币种不在交易所: {symbol.upper()}")
             raise HTTPException(500, detail=str(e))
 
     @app.get("/api/tickers")
@@ -1065,6 +1071,48 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
         if not pt:
             return []
         return pt.paper_engine.trade_history[-100:]
+
+    @app.get("/api/paper/trades/csv")
+    async def paper_trades_csv():
+        """Download paper trading trade history as CSV."""
+        import csv
+        import io
+
+        pt = _get_paper()
+        trades = pt.paper_engine.trade_history if pt else []
+
+        buf = io.StringIO()
+        # BOM for Excel to auto-detect UTF-8
+        buf.write('\ufeff')
+        writer = csv.writer(buf)
+        writer.writerow([
+            "币种", "方向", "开仓价", "平仓价",
+            "开仓时间", "平仓时间", "持仓小时",
+            "仓位(USDT)", "盈亏(USDT)", "盈亏%", "平仓原因",
+        ])
+        for t in trades:
+            writer.writerow([
+                t.get("symbol", ""),
+                t.get("direction", ""),
+                t.get("entry_price", ""),
+                t.get("exit_price", ""),
+                t.get("entry_time", ""),
+                t.get("exit_time", ""),
+                t.get("hold_hours", ""),
+                t.get("size_usdt", ""),
+                t.get("pnl", ""),
+                t.get("pnl_pct", ""),
+                t.get("exit_reason", ""),
+            ])
+
+        from starlette.responses import Response
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": "attachment; filename=paper_trades.csv",
+            },
+        )
 
     @app.get("/api/paper/signals")
     async def paper_signals():

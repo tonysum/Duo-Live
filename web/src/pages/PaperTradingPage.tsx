@@ -18,6 +18,7 @@ import {
     ArrowUpRight,
     ArrowDownLeft,
     AlertCircle,
+    Download,
 } from "lucide-react"
 
 function StatCard({ label, value, icon: Icon, color = "default" }: {
@@ -320,9 +321,25 @@ export default function PaperTradingPage() {
 
                 {/* Trade History */}
                 <div>
-                    <h2 className="text-sm font-semibold text-zinc-900 dark:text-white mb-3 flex items-center gap-2">
-                        📜 Trade History ({trades.length})
-                    </h2>
+                    <div className="flex items-center justify-between mb-3">
+                        <h2 className="text-sm font-semibold text-zinc-900 dark:text-white flex items-center gap-2">
+                            📜 Trade History ({trades.length})
+                        </h2>
+                        {trades.length > 0 && (
+                            <a
+                                href={`${import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8899`}/api/paper/trades/csv`}
+                                download
+                                className={cn(
+                                    "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200",
+                                    "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400",
+                                    "hover:bg-indigo-200 dark:hover:bg-indigo-900/50"
+                                )}
+                            >
+                                <Download className="w-3.5 h-3.5" />
+                                导出CSV
+                            </a>
+                        )}
+                    </div>
                     <div className={cn(
                         "bg-white dark:bg-zinc-900/70",
                         "border border-zinc-100 dark:border-zinc-800",
@@ -498,6 +515,6 @@ export default function PaperTradingPage() {
                     </div>
                 )}
             </div>
-        </Layout>
+        </Layout >
     )
 }
