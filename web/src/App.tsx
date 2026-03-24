@@ -7,7 +7,6 @@ import TradingPage from "@/pages/TradingPage"
 import SignalsPage from "@/pages/SignalsPage"
 import ChartPage from "@/pages/ChartPage"
 import LogsPage from "@/pages/LogsPage"
-import PaperTradingPage from "@/pages/PaperTradingPage"
 import SettingsPage from "@/pages/SettingsPage"
 
 export default function App() {
@@ -23,7 +22,6 @@ export default function App() {
                 <Route path="/chart" element={<ChartPage />} />
                 <Route path="/logs" element={<LogsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/paper" element={<PaperTradingPage />} />
             </Routes>
         </ThemeProvider>
     )

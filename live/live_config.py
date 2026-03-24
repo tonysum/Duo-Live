@@ -1,6 +1,7 @@
 """Live trading configuration.
 
-Strategy parameters for the Surge Short V2 live trading system.
+Strategy-independent parameters for the live trading system.
+Strategy-specific parameters live in rolling_config.py.
 """
 
 from dataclasses import dataclass, fields, asdict
@@ -16,54 +17,20 @@ CONFIG_PATH = Path("data/config.json")
 
 @dataclass
 class LiveTradingConfig:
-    """Configuration for live trading."""
+    """Configuration for live trading infrastructure.
+
+    Strategy-specific params (TP/SL/trailing) are in RollingLiveConfig.
+    These are shared infra & capital params used by trader/monitor.
+    """
 
     # ── Capital & Leverage ──────────────────────────────────────────────
-    leverage: int = 3
-    max_positions: int = 6
+    leverage: int = 2
+    max_positions: int = 7
     max_entries_per_day: int = 2
     live_fixed_margin_usdt: Decimal = Decimal("5")  # 固定保证金 (USDT/笔)
     daily_loss_limit_usdt: Decimal = Decimal("50")   # 每日亏损限额 (0=不限)
     margin_mode: str = "fixed"  # "fixed" 或 "percent"
     margin_pct: float = 2.0     # 百分比模式: 可用余额的百分比
-
-    # ── V2 Strategy Parameters ──────────────────────────────────────────
-    stop_loss_pct: float = 18.0
-    strong_tp_pct: float = 20.0
-    medium_tp_pct: float = 11.0
-    weak_tp_pct: float = 5.0
-    max_hold_hours: int = 72
-
-    # V2 early-stop
-    enable_2h_early_stop: bool = True
-    early_stop_2h_threshold: float = 0.02
-    enable_12h_early_stop: bool = True
-    early_stop_12h_threshold: float = 0.03
-
-    # V2 weak-24h exit → Observing
-    enable_weak_24h_exit: bool = True
-    weak_24h_threshold: float = -0.01
-
-    # V2 max-gain 24h exit
-    enable_max_gain_24h_exit: bool = True
-    max_gain_24h_threshold: float = 0.05
-
-    # V2 strength evaluation
-    strength_eval_2h_growth: float = 0.055
-    strength_eval_2h_ratio: float = 0.60
-    strength_eval_12h_growth: float = 0.075
-    strength_eval_12h_ratio: float = 0.60
-
-    # ── Signal Scanning ────────────────────────────────────────────────
-    surge_threshold: float = 10.0
-    surge_max_multiple: float = 14008.0
-    scan_interval_seconds: int = 3600  # 1 hour
-    # Binance kline weight=5/call, 2 calls/symbol, rate limit 2400/min.
-    # At 300 symbols: 300×2×5=3000 weight/scan. Keep concurrency low to stay safe.
-    scanner_concurrency: int = 3       # parallel symbol scans per cycle
-
-    # ── Risk Filters ──────────────────────────────────────────────────
-    enable_risk_filters: bool = True
 
     # ── Position Monitoring ────────────────────────────────────────────
     monitor_interval_seconds: int = 60  # 🔧 网络优化：降低请求频率 30s → 60s

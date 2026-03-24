@@ -295,6 +295,7 @@ duo-live 自动交易系统报警
         unrealized_pnl: str,
         open_positions: int,
         trades_today: int,
+        yesterday_balance: str | None = None,
     ):
         """Send daily P&L summary report."""
         pnl_val = float(daily_pnl) if daily_pnl else 0
@@ -302,15 +303,28 @@ duo-live 自动交易系统报警
         unreal_val = float(unrealized_pnl) if unrealized_pnl else 0
         unreal_emoji = "🟢" if unreal_val >= 0 else "🔴"
 
-        await self.send(
-            f"{pnl_emoji} <b>每日盈亏报告</b>\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"  余额:     {total_balance} USDT\n"
-            f"  今日盈亏: {daily_pnl} USDT\n"
-            f"  {unreal_emoji} 浮动盈亏: {unrealized_pnl} USDT\n"
-            f"  持仓数:   {open_positions}\n"
-            f"  今日交易: {trades_today} 笔"
-        )
+        lines = [
+            f"{pnl_emoji} <b>每日盈亏报告</b>",
+            "━━━━━━━━━━━━━━",
+            f"  余额:     {total_balance} USDT",
+        ]
+        if yesterday_balance:
+            lines.append(f"  昨日余额: {yesterday_balance} USDT")
+            try:
+                today_v = float(total_balance.replace(",", ""))
+                yest_v = float(yesterday_balance.replace(",", ""))
+                diff = today_v - yest_v
+                sign = "+" if diff >= 0 else ""
+                lines.append(f"  日变化:   {sign}{diff:,.2f} USDT")
+            except ValueError:
+                pass
+        lines.extend([
+            f"  今日盈亏: {daily_pnl} USDT",
+            f"  {unreal_emoji} 浮动盈亏: {unrealized_pnl} USDT",
+            f"  持仓数:   {open_positions}",
+            f"  今日交易: {trades_today} 笔",
+        ])
+        await self.send("\n".join(lines))
 
     # ── 紧急报警（同时发送 Telegram 和邮件）────────────────────────
 

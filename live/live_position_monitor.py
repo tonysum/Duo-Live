@@ -59,6 +59,7 @@ class TrackedPosition:
 
     # Dynamic TP (V2 strength evaluation)
     current_tp_pct: float = 33.0  # current take-profit percentage
+    current_sl_pct: float = 18.0  # current stop-loss percentage
     evaluated_2h: bool = False
     evaluated_12h: bool = False
     strength: str = "unknown"  # strong / medium / weak
@@ -66,6 +67,10 @@ class TrackedPosition:
     # Re-place failure counters (stop retrying after MAX_REPLACE_ATTEMPTS)
     tp_fail_count: int = 0
     sl_fail_count: int = 0
+
+    # Rolling strategy fields
+    lowest_price: Optional[Decimal] = None    # 追踪止损: 持仓期间最低价
+    has_added_position: bool = False           # 是否已加仓
 
 
 class LivePositionMonitor:
@@ -97,6 +102,8 @@ class LivePositionMonitor:
         self.store = store
         self.on_sl_triggered = on_sl_triggered  # S
         self.strategy = strategy
+        # Shortcut to rolling strategy config (TP/SL/max_hold params)
+        self._rc = getattr(strategy, 'config', None) if strategy else None
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
         self._poll_count: int = 0  # incremented each _check_all; used for periodic cleanup
@@ -113,6 +120,8 @@ class LivePositionMonitor:
         side: str,
         quantity: str,
         deferred_tp_sl: dict[str, str],
+        tp_pct: float = 33.0,
+        sl_pct: float = 18.0,
     ):
         """Start tracking a new position (entry pending, TP/SL deferred)."""
         pos = TrackedPosition(
@@ -121,6 +130,8 @@ class LivePositionMonitor:
             side=side,
             quantity=quantity,
             deferred_tp_sl=deferred_tp_sl,
+            current_tp_pct=tp_pct,
+            current_sl_pct=sl_pct,
         )
         self._positions[symbol] = pos
         logger.info(
@@ -221,7 +232,7 @@ class LivePositionMonitor:
                     entry_p = Decimal(str(pos_risk.entry_price))
                     # Use persisted tp_pct if available, otherwise fall back to strong_tp_pct
                     tp_pct = tracked.current_tp_pct
-                    sl_pct = self.config.stop_loss_pct
+                    sl_pct = self._rc.sl_threshold * 100 if self._rc else 44.0
 
                     if side == "SHORT":
                         tp_price = entry_p * (1 - Decimal(str(tp_pct)) / 100)
@@ -511,7 +522,7 @@ class LivePositionMonitor:
                 if self.notifier:
                     if action.reason == "max_hold_time":
                         await self.notifier.notify_timeout_close(
-                            pos.symbol, self.config.max_hold_hours,
+                            pos.symbol, self._rc.max_hold_days * 24 if self._rc else 264,
                         )
                     else:
                         await self.notifier.send(
@@ -531,10 +542,12 @@ class LivePositionMonitor:
                 await self._replace_tp_order(pos)
                 return
 
+            elif action.action == "add_position":
+                # Add to existing position (加仓)
+                await self._handle_add_position(pos, action)
+                return
+
             # action == "hold" → fall through
-        else:
-            # Legacy fallback (no strategy injected)
-            await self._update_dynamic_tp(pos, now)
 
         # ── 2. Check TP/SL algo order status ──────────────────────────
         try:
@@ -695,14 +708,15 @@ class LivePositionMonitor:
         # ── 3. Max hold time enforcement (legacy fallback, strategy handles this) ──
         if not pos.closed and pos.entry_filled and not self.strategy:
             hold_hours = (now - pos.created_at).total_seconds() / 3600
-            if hold_hours >= self.config.max_hold_hours:
+            _max_hold_h = self._rc.max_hold_days * 24 if self._rc else 264
+            if hold_hours >= _max_hold_h:
                 logger.warning(
                     "⏰ 持仓超时 (%dh): %s — 市价平仓",
-                    self.config.max_hold_hours, pos.symbol,
+                    _max_hold_h, pos.symbol,
                 )
                 if self.notifier:
                     await self.notifier.notify_timeout_close(
-                        pos.symbol, self.config.max_hold_hours,
+                        pos.symbol, _max_hold_h,
                     )
                 self._record_live_trade(
                     pos, event="timeout",
@@ -1121,7 +1135,7 @@ class LivePositionMonitor:
             prefix = "tp"
             label = "止盈"
         else:
-            pct = Decimal(str(self.config.stop_loss_pct))
+            pct = Decimal(str(self._rc.sl_threshold * 100 if self._rc else 44.0))
             if is_long:
                 price = pos.entry_price * (1 - pct / 100)
             else:
@@ -1308,94 +1322,141 @@ class LivePositionMonitor:
                     symbol, quantity, result, step,
                 )
                 return str(result)
-            # Fallback: cached qty_precision
-            prec = entry.get("qty_precision", 8)
-            rounded = self.executor._round_qty(Decimal(quantity), prec)
-            return str(rounded)
 
         # Last resort: use executor's precision cache
         _, qty_prec = await self.executor._get_precision(symbol)
         return str(self.executor._round_qty(Decimal(quantity), qty_prec))
 
-    # ------------------------------------------------------------------
-    # Dynamic TP (V2 — strength evaluation at 2h / 12h checkpoints)
-    # ------------------------------------------------------------------
 
-    async def _update_dynamic_tp(self, pos: TrackedPosition, now: datetime):
-        """Evaluate coin strength at 2h/12h and adjust TP if needed.
 
-        V2 dynamic TP evaluation:
-          - 2h:  strong → 33%, medium → 21%
-          - 12h: strong → 33%, weak → 10%
-        """
-        if not pos.entry_fill_time or not pos.entry_price:
-            return
 
-        hold_hours = (now - pos.entry_fill_time).total_seconds() / 3600
+    async def _handle_add_position(self, pos: TrackedPosition, action):
+        """Handle add-position action: place additional market order + update TP/SL."""
+        from .strategy import PositionAction
 
-        if hold_hours < 2.0:
-            return
+        symbol = pos.symbol
+        logger.info("📈 加仓执行: %s (当前仓位 %s %s)", symbol, pos.side, pos.quantity)
 
-        old_tp_pct = pos.current_tp_pct
+        try:
+            # ── 1. Get current price for market order ──────────────
+            ticker = await self.client.get_ticker_price(symbol)
+            current_price = ticker.price
 
-        # 2h evaluation (run once)
-        if not pos.evaluated_2h and hold_hours >= 2.0:
-            pos.evaluated_2h = True
-            pct_drop = await self._calc_5m_drop_ratio(
-                pos.symbol,
-                pos.entry_fill_time,
-                pos.entry_fill_time + timedelta(hours=2),
-                pos.entry_price,
-                self.config.strength_eval_2h_growth,
+            # ── 2. Calculate add quantity (same as original or * multiplier) ──
+            original_qty = Decimal(pos.quantity)
+            # multiplier is stored in rolling_config; default 1.0x
+            add_qty = original_qty  # 1:1 ratio
+
+            # Round to exchange precision
+            rounded_qty = await self._round_quantity(symbol, str(add_qty))
+
+            # ── 3. Place market order (same direction) ─────────────
+            is_hedge = await self.client.get_position_mode()
+            ps = pos.side if is_hedge else "BOTH"
+            entry_side = "SELL" if pos.side == "SHORT" else "BUY"
+
+            order = await self.client.place_order(
+                symbol=symbol,
+                side=entry_side,
+                positionSide=ps,
+                type="MARKET",
+                quantity=str(rounded_qty),
             )
-            if pct_drop is not None and pct_drop >= self.config.strength_eval_2h_ratio:
-                pos.strength = "strong"
-                pos.current_tp_pct = self.config.strong_tp_pct
-            else:
-                pos.strength = "medium"
-                pos.current_tp_pct = self.config.medium_tp_pct
             logger.info(
-                "📊 2h 评估: %s → %s (TP %s%% → %s%%)",
-                pos.symbol, pos.strength, old_tp_pct, pos.current_tp_pct,
+                "✅ 加仓市价单已成交: %s %s qty=%s @ ~%s (orderId=%s)",
+                symbol, pos.side, rounded_qty, current_price, order.order_id,
             )
 
-        # 12h evaluation (run once)
-        if not pos.evaluated_12h and hold_hours >= 12.0:
-            pos.evaluated_12h = True
-            pct_drop = await self._calc_5m_drop_ratio(
-                pos.symbol,
-                pos.entry_fill_time,
-                pos.entry_fill_time + timedelta(hours=12),
-                pos.entry_price,
-                self.config.strength_eval_12h_growth,
-            )
-            if pct_drop is not None and pct_drop >= self.config.strength_eval_12h_ratio:
-                pos.strength = "strong"
-                pos.current_tp_pct = self.config.strong_tp_pct
-            else:
-                pos.strength = "weak"
-                pos.current_tp_pct = self.config.weak_tp_pct
-            logger.info(
-                "📊 12h 评估: %s → %s (TP %s%% → %s%%)",
-                pos.symbol, pos.strength, old_tp_pct, pos.current_tp_pct,
-            )
+            # ── 4. Mark position as added ──────────────────────────
+            pos.has_added_position = True
+            new_total_qty = original_qty + Decimal(str(rounded_qty))
+            pos.quantity = str(new_total_qty)
 
-        # Replace TP order if changed and persist new state to DB
-        if pos.current_tp_pct != old_tp_pct:
+            # ── 5. Update TP to tp_after_add ───────────────────────
+            pos.current_tp_pct = action.new_tp_pct  # tp_after_add * 100
+            pos.strength = "added"
             await self._replace_tp_order(pos)
 
-        # Always persist current TP state so crash-recovery respects it
-        if self.store and (pos.evaluated_2h or pos.evaluated_12h):
-            try:
-                self.store.save_position_state(
-                    symbol=pos.symbol,
-                    current_tp_pct=pos.current_tp_pct,
-                    strength=pos.strength,
-                    evaluated_2h=pos.evaluated_2h,
-                    evaluated_12h=pos.evaluated_12h,
+            # ── 6. Update SL with new total quantity ───────────────
+            await self._replace_sl_order_for_new_qty(pos)
+
+            # ── 7. Record trade ────────────────────────────────────
+            self._record_live_trade(
+                pos, event="add_position",
+                entry_price=str(current_price),
+            )
+
+            # ── 8. Notify ──────────────────────────────────────────
+            if self.notifier:
+                await self.notifier.send(
+                    f"📈 <b>加仓</b>\n"
+                    f"  {symbol} {pos.side}\n"
+                    f"  加仓价: {current_price}\n"
+                    f"  加仓量: {rounded_qty}\n"
+                    f"  总仓位: {new_total_qty}\n"
+                    f"  新TP: {pos.current_tp_pct:.0f}%"
                 )
-            except Exception as e:
-                logger.warning("持仓 TP 状态写入 DB 失败: %s", e)
+
+        except Exception as e:
+            logger.error("❌ 加仓失败: %s — %s", symbol, e, exc_info=True)
+            if self.notifier:
+                await self.notifier.send(f"❌ 加仓失败: {symbol}: {e}")
+
+    async def _replace_sl_order_for_new_qty(self, pos: TrackedPosition):
+        """Cancel and re-place SL order with updated quantity after add-position."""
+        if not pos.entry_price or not pos.sl_algo_id:
+            return
+        try:
+            await self.client.cancel_algo_order(pos.symbol, algo_id=pos.sl_algo_id)
+            logger.info("🗑️ 旧止损单已撤销 (加仓后更新): %s", pos.symbol)
+        except Exception as e:
+            logger.warning("撤销旧止损单失败: %s", e)
+            return
+
+        pos.sl_algo_id = None
+
+        try:
+            actual_qty = await self._get_exchange_position_amt(pos.symbol)
+            if actual_qty == 0:
+                return
+            is_long = actual_qty > 0
+            close_side = "SELL" if is_long else "BUY"
+
+            is_hedge = await self.client.get_position_mode()
+            ps = pos.side if is_hedge else "BOTH"
+
+            # Recalculate SL price from entry (use stored SL% from strategy)
+            sl_pct = pos.current_sl_pct
+            sl_mult = (
+                Decimal("1") - Decimal(str(sl_pct)) / Decimal("100")
+                if is_long
+                else Decimal("1") + Decimal(str(sl_pct)) / Decimal("100")
+            )
+            new_sl_price = pos.entry_price * sl_mult
+            new_sl_price = await self._round_trigger_price(pos.symbol, new_sl_price)
+
+            rounded_qty = await self._round_quantity(pos.symbol, str(abs(actual_qty)))
+            order_prefix = uuid.uuid4().hex[:8]
+
+            sl_order = await self.client.place_algo_order(
+                symbol=pos.symbol,
+                side=close_side,
+                positionSide=ps,
+                type="STOP_MARKET",
+                triggerPrice=str(new_sl_price),
+                quantity=str(rounded_qty),
+                reduceOnly="true",
+                priceProtect="true",
+                workingType="CONTRACT_PRICE",
+                clientAlgoId=f"sl_{order_prefix}",
+            )
+            pos.sl_algo_id = sl_order.algo_id
+            logger.info(
+                "✅ 新止损单已挂出 (加仓后): %s SL@ %s qty=%s (algoId=%s)",
+                pos.symbol, new_sl_price, rounded_qty, sl_order.algo_id,
+            )
+        except Exception as e:
+            logger.error("❌ 加仓后重挂止损单失败: %s — %s", pos.symbol, e)
 
     async def _replace_tp_order(self, pos: TrackedPosition):
         """Cancel old TP and place a new one with updated tp_pct."""
@@ -1533,7 +1594,7 @@ class LivePositionMonitor:
             # Continue with tracked quantity and side as fallback
             is_long = pos.side == "LONG"
         # Fall back to the original TP percentage from config
-        fallback_pct = self.config.strong_tp_pct
+        fallback_pct = self._rc.tp_initial * 100 if self._rc else 34.0
         tp_mult = (
             Decimal("1") + Decimal(str(fallback_pct)) / Decimal("100")
             if is_long
@@ -1589,40 +1650,6 @@ class LivePositionMonitor:
                     f"  请手动检查并设置止盈!"
                 )
 
-    async def _calc_5m_drop_ratio(
-        self,
-        symbol: str,
-        start: datetime,
-        end: datetime,
-        entry_price: Decimal,
-        threshold: float,
-    ) -> float | None:
-        """Compute fraction of 5m candles whose close dropped > threshold from entry.
-
-        Computes the fraction of 5m candles that dropped beyond threshold.
-        """
-        try:
-            start_ms = int(start.timestamp() * 1000)
-            end_ms = int(end.timestamp() * 1000)
-
-            klines = await self.client.get_klines(
-                symbol=symbol,
-                interval="5m",
-                start_time=start_ms,
-                end_time=end_ms,
-                limit=1500,
-            )
-
-            if not klines or len(klines) < 2:
-                return None
-
-            ep = float(entry_price)
-            drops = sum(1 for k in klines if (float(k.close) - ep) / ep < -threshold)
-            return drops / len(klines)
-
-        except Exception as e:
-            logger.debug("5m drop ratio error for %s: %s", symbol, e)
-            return None
 
     def _record_live_trade(self, pos: TrackedPosition, event: str, **kwargs):
         """Record a live trade event to the store."""

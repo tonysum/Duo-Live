@@ -131,10 +131,7 @@ class ConfigResponse(BaseModel):
     max_entries_per_day: int
     stop_loss_pct: float
     strong_tp_pct: float
-    medium_tp_pct: float
-    weak_tp_pct: float
     max_hold_hours: int
-    surge_threshold: float
     live_fixed_margin_usdt: float
     daily_loss_limit_usdt: float
     margin_mode: str
@@ -294,12 +291,11 @@ def _finalize_trade(op: dict) -> dict:
 
 # ── App factory ──────────────────────────────────────────────────────
 
-def create_app(trader, *, paper_trading=None) -> FastAPI:
+def create_app(trader) -> FastAPI:
     """Create FastAPI app with trader reference.
 
     Args:
         trader: LiveTrader instance (shared, same process).
-        paper_trading: Optional DSXPaperTrading instance (for dsxtx mode).
     """
     app = FastAPI(
         title="Duo-Live Trading API",
@@ -550,16 +546,14 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
     async def get_config():
         """Get current trading config."""
         c = trader.config
+        rc = trader.rolling_config
         return ConfigResponse(
             leverage=c.leverage,
             max_positions=c.max_positions,
             max_entries_per_day=c.max_entries_per_day,
-            stop_loss_pct=c.stop_loss_pct,
-            strong_tp_pct=c.strong_tp_pct,
-            medium_tp_pct=c.medium_tp_pct,
-            weak_tp_pct=c.weak_tp_pct,
-            max_hold_hours=c.max_hold_hours,
-            surge_threshold=c.surge_threshold,
+            stop_loss_pct=rc.sl_threshold * 100 if rc else 44.0,
+            strong_tp_pct=rc.tp_initial * 100 if rc else 34.0,
+            max_hold_hours=rc.max_hold_days * 24 if rc else 264,
             live_fixed_margin_usdt=float(c.live_fixed_margin_usdt),
             daily_loss_limit_usdt=float(c.daily_loss_limit_usdt),
             margin_mode=c.margin_mode,
@@ -999,137 +993,5 @@ def create_app(trader, *, paper_trading=None) -> FastAPI:
                 ws_clients.remove(ws)
             logger.info("WebSocket client disconnected (%d remaining)", len(ws_clients))
 
-    # ── Paper Trading endpoints ─────────────────────────────────────
-    # Instance stored on app.state.paper (set via param or /start)
-
-    app.state.paper = paper_trading  # may be None initially
-
-    def _get_paper():
-        return app.state.paper
-
-    @app.post("/api/paper/start")
-    async def paper_start(
-        symbols: Optional[list[str]] = None,
-    ):
-        """Start the paper trading subsystem."""
-        import asyncio
-        from .paper_trading import DSXPaperTrading
-        pt = _get_paper()
-        if pt and pt.is_running:
-            return {"status": "already_running", "message": "Paper trading is already running"}
-
-        try:
-            def _blocking_start():
-                p = DSXPaperTrading(symbols=symbols)
-                p.start()
-                return p
-
-            pt = await asyncio.to_thread(_blocking_start)
-            app.state.paper = pt
-            return {"status": "ok", "message": "Paper trading started", "symbols": pt.symbols}
-        except Exception as e:
-            logger.error("Paper trading start failed: %s", e)
-            return {"status": "error", "message": str(e)}
-
-    @app.post("/api/paper/stop")
-    async def paper_stop():
-        """Stop the paper trading subsystem."""
-        pt = _get_paper()
-        if not pt or not pt.is_running:
-            return {"status": "not_running", "message": "Paper trading is not running"}
-        pt.stop()
-        return {"status": "ok", "message": "Paper trading stopped"}
-
-    @app.get("/api/paper/status")
-    async def paper_status():
-        """Paper trading system status + per-symbol state machine."""
-        pt = _get_paper()
-        if not pt:
-            return {"running": False, "symbols": [], "state_info": {}}
-        return pt.get_status_data()
-
-    @app.get("/api/paper/stats")
-    async def paper_stats():
-        """Paper trading capital / win-rate / P&L statistics."""
-        pt = _get_paper()
-        if not pt:
-            return {"error": "Paper trading not initialized"}
-        return pt.paper_engine.get_stats()
-
-    @app.get("/api/paper/positions")
-    async def paper_positions():
-        """Paper trading open positions + pending orders."""
-        pt = _get_paper()
-        if not pt:
-            return {"positions": [], "pending": []}
-        return pt.get_positions_data()
-
-    @app.get("/api/paper/trades")
-    async def paper_trades():
-        """Paper trading completed trade history."""
-        pt = _get_paper()
-        if not pt:
-            return []
-        return pt.paper_engine.trade_history[-100:]
-
-    @app.get("/api/paper/trades/csv")
-    async def paper_trades_csv():
-        """Download paper trading trade history as CSV."""
-        import csv
-        import io
-
-        pt = _get_paper()
-        trades = pt.paper_engine.trade_history if pt else []
-
-        buf = io.StringIO()
-        # BOM for Excel to auto-detect UTF-8
-        buf.write('\ufeff')
-        writer = csv.writer(buf)
-        writer.writerow([
-            "币种", "方向", "开仓价", "平仓价",
-            "开仓时间", "平仓时间", "持仓小时",
-            "仓位(USDT)", "盈亏(USDT)", "盈亏%", "平仓原因",
-        ])
-        for t in trades:
-            writer.writerow([
-                t.get("symbol", ""),
-                t.get("direction", ""),
-                t.get("entry_price", ""),
-                t.get("exit_price", ""),
-                t.get("entry_time", ""),
-                t.get("exit_time", ""),
-                t.get("hold_hours", ""),
-                t.get("size_usdt", ""),
-                t.get("pnl", ""),
-                t.get("pnl_pct", ""),
-                t.get("exit_reason", ""),
-            ])
-
-        from starlette.responses import Response
-        return Response(
-            content=buf.getvalue(),
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "Content-Disposition": "attachment; filename=paper_trades.csv",
-            },
-        )
-
-    @app.get("/api/paper/signals")
-    async def paper_signals():
-        """Paper trading signal history."""
-        pt = _get_paper()
-        if not pt:
-            return []
-        return pt.signal_history[-100:]
-
-    @app.get("/api/paper/ws-status")
-    async def paper_ws_status():
-        """Paper trading WebSocket connection status per symbol."""
-        pt = _get_paper()
-        if not pt:
-            return {"connected": 0, "total": 0, "symbols": {}}
-        ws = pt.data_collector.get_ws_summary()
-        connected = sum(1 for v in ws.values() if v['status'] == 'connected')
-        return {"connected": connected, "total": len(ws), "symbols": ws}
 
     return app

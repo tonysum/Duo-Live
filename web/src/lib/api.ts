@@ -102,90 +102,6 @@ export interface OpenOrder {
   is_algo: boolean;
 }
 
-// ── Paper Trading Types ─────────────────────────────────────────────
-export interface PaperStats {
-  initial_capital: number;
-  current_capital: number;
-  total_pnl: number;
-  total_pnl_pct: number;
-  total_trades: number;
-  wins: number;
-  losses: number;
-  win_rate: number;
-  avg_pnl: number;
-  avg_hold_hours: number;
-  open_positions: number;
-  pending_orders: number;
-  max_positions: number;
-}
-
-export interface PaperPosition {
-  symbol: string;
-  direction: string;
-  entry_price: number;
-  tp_price: number;
-  sl_price: number;
-  entry_time: string;
-  size_usdt: number;
-  unrealized_pnl: number;
-  hold_hours: number;
-}
-
-export interface PaperPending {
-  symbol: string;
-  direction: string;
-  entry_price: number;
-  created_at: string;
-  size_usdt: number;
-}
-
-export interface PaperTrade {
-  symbol: string;
-  direction: string;
-  entry_price: number;
-  exit_price: number;
-  entry_time: string;
-  exit_time: string;
-  hold_hours: number;
-  size_usdt: number;
-  pnl: number;
-  pnl_pct: number;
-  exit_reason: string;
-}
-
-export interface PaperSignal {
-  symbol: string;
-  direction: string;
-  entry_price: number;
-  tp_price: number;
-  sl_price: number;
-  signal_time: string;
-  current_price: number | null;
-  state: string;
-}
-
-export interface PaperStatus {
-  running: boolean;
-  start_time: string | null;
-  uptime_seconds: number;
-  uptime_display: string;
-  symbols: string[];
-  state_info: Record<string, { state: string; base_price: number | null; alerts_count: number }>;
-  total_alerts: number;
-}
-
-export interface PaperWsStatus {
-  connected: number;
-  total: number;
-  symbols: Record<string, {
-    status: string;
-    last_data: string | null;
-    stale_seconds: number | null;
-    reconnects: number;
-    error: string | null;
-    rows: number;
-  }>;
-}
 
 // ── Fetch helpers ──────────────────────────────────────────────────
 async function fetchWithRetry(
@@ -270,16 +186,6 @@ export const api = {
     return `${base}/ws/logs${token ? `?token=${token}` : ""}`
   },
 
-  // Paper Trading API
-  paper: {
-    getStatus: () => get<PaperStatus>("/api/paper/status"),
-    getStats: () => get<PaperStats>("/api/paper/stats"),
-    getPositions: () => get<{ positions: PaperPosition[]; pending: PaperPending[] }>("/api/paper/positions"),
-    getTrades: () => get<PaperTrade[]>("/api/paper/trades"),
-    getSignals: () => get<PaperSignal[]>("/api/paper/signals"),
-    getWsStatus: () => get<PaperWsStatus>("/api/paper/ws-status"),
-    start: (symbols?: string[]) => post<{ status: string; message: string }>("/api/paper/start", symbols ? { symbols } : undefined),
-    stop: () => post<{ status: string; message: string }>("/api/paper/stop"),
-  },
 };
+
 

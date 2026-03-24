@@ -332,8 +332,8 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         pos_args, flags = _parse_flags(sys.argv[2:])
         leverage = int(flags.get("leverage", config.leverage))
         side = "LONG" if "long" in flags else "SHORT"
-        tp_pct = float(flags.get("tp", config.strong_tp_pct))
-        sl_pct = float(flags.get("sl", config.stop_loss_pct))
+        tp_pct = float(flags.get("tp", 34.0))  # default from RollingLiveConfig.tp_initial
+        sl_pct = float(flags.get("sl", 44.0))  # default from RollingLiveConfig.sl_threshold
 
         if "margin" in flags and len(pos_args) >= 2:
             # Mode 2: price + margin
@@ -567,78 +567,43 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
 
         auto_trade = "auto-trade" in run_flags
 
+        # ── Strategy: Rolling R24 ──────────────────────────────────
+        from .rolling_config import RollingLiveConfig
+        from .rolling_live_strategy import RollingLiveStrategy
+        rolling_config = RollingLiveConfig()
+        strategy = RollingLiveStrategy(config=rolling_config)
+
         # ── Startup confirmation ──────────────────────────────
         print()
         print("=" * 50)
         print("  ⚠️  实盘模式 — 将使用真实资金交易")
         print("=" * 50)
+
+        print(f"  策略:       🔄 Rolling R24 (24h 滚动涨幅)")
+        print(f"  涨幅阈值:   {rolling_config.min_pct_chg}%")
+        print(f"  Top N:      {rolling_config.top_n}")
+        print(f"  扫描间隔:   {rolling_config.scan_interval_hours}h")
         print(f"  保证金:     {config.live_fixed_margin_usdt} USDT / 笔")
         print(f"  杠杆:       {config.leverage}x")
         print(f"  每日亏损限额: {config.daily_loss_limit_usdt} USDT")
-        print(f"  止盈:       {config.strong_tp_pct}%")
-        print(f"  止损:       {config.stop_loss_pct}%")
-        print(f"  最大持仓时间: {config.max_hold_hours}h")
+        print(f"  止盈:       {rolling_config.tp_initial*100:.0f}% → {rolling_config.tp_reduced*100:.0f}% (>{rolling_config.tp_hours_threshold}h)")
+        print(f"  止损:       {rolling_config.sl_threshold*100:.0f}%")
+        if rolling_config.enable_trailing_stop:
+            print(f"  追踪止损:   激活 {rolling_config.trailing_activation_pct*100:.0f}%, 距离 {rolling_config.trailing_distance_pct*100:.0f}%")
+        print(f"  最大持仓时间: {rolling_config.max_hold_days}d")
         print(f"  最大持仓数:  {config.max_positions}")
+        print(f"  新币过滤:   {rolling_config.min_listed_days}d")
+        print(f"  信号冷却:   {rolling_config.signal_cooldown_hours}h")
+
         print(f"  自动交易:   {'开启' if auto_trade else '关闭 (可在前端开启)'}")
         print()
         print("  🚀 启动中...")
         print()
         
-        #更换策略的入口
-        trader = LiveTrader(config=config)
+
+        trader = LiveTrader(config=config, strategy=strategy)
         trader.auto_trade_enabled = auto_trade
         asyncio.run(trader.start())
-
-    elif cmd == "dsxtx":
-        # python -m live dsxtx [--symbols SOL DOGE XRP] [--port 8899]
-        import uvicorn
-        from .api import create_app
-        from .paper_trading import DSXPaperTrading
-
-        load_dotenv()
-
-        # Parse symbols (collect all args after --symbols until next flag)
-        symbols = None
-        sym_args = []
-        found = False
-        for a in sys.argv[2:]:
-            if a == "--symbols":
-                found = True
-                continue
-            if found and a.startswith("--"):
-                break
-            if found:
-                sym_args.append(a.upper() + ("USDT" if not a.upper().endswith("USDT") else ""))
-        if sym_args:
-            symbols = sym_args
-
-        _, dsxtx_flags = _parse_flags(sys.argv[2:])
-        port = int(dsxtx_flags.get("port", "8899"))
-
-        print()
-        print("=" * 50)
-        print("  📄 Paper Trading Mode — DSXtx")
-        print("=" * 50)
-        print(f"  Symbols:  {len(symbols) if symbols else 'all default (33)'}")
-        print(f"  API port: {port}")
-        print()
-        print("  🚀 Starting...")
-        print()
-
-        # Create paper trading instance
-        pt = DSXPaperTrading(symbols=symbols)
-        pt.start()
-
-        # Create a minimal trader stub for the API
-        class _PaperTraderStub:
-            auto_trade_enabled = False
-            store = None
-            client = None
-            config = None  # Paper trading doesn't need live config
-            live_monitor = None
-
-        app = create_app(_PaperTraderStub(), paper_trading=pt)
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
     else:
         print(f"Unknown command: {cmd}")
@@ -650,9 +615,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("    --margin N            固定保证金 (USDT, 默认5)")
         print("    --loss-limit N        每日亏损限额 (USDT, 默认50)")
         print("    --auto-trade          启动时开启自动交易 (默认关闭)")
-        print("  dsxtx                   启动 DSXtx 模拟交易")
-        print("    --symbols S1 S2 ...   指定监控币种 (默认33个)")
-        print("    --port N              API 端口 (默认8899)")
+
         print("  status                  查看账户状态")
         print("  trades [N]              查看实盘交易记录 (默认50条)")
         print("  signals [N]             查看信号历史 (默认50条)")

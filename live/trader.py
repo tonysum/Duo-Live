@@ -27,7 +27,7 @@ from .store import TradeStore, SignalEvent
 from .binance_client import BinanceFuturesClient
 from .notifier import TelegramNotifier
 from .ws_stream import BinanceUserStream
-from .strategy import Strategy, SurgeShortStrategy
+from .strategy import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,13 @@ class LiveTrader:
         self.auto_trade_enabled = False  # 自动交易开关 (默认关闭)
         self._main_task: Optional[asyncio.Task] = None
 
-        # Pluggable strategy (defaults to SurgeShortStrategy)
-        self.strategy = strategy or SurgeShortStrategy()
+        # Pluggable strategy (required — set by __main__.py)
+        if strategy is None:
+            raise ValueError("strategy is required")
+        self.strategy = strategy
+
+        # Strategy config shortcut
+        self.rolling_config = getattr(self.strategy, 'config', None)
 
         # Shared Binance client
         self.client = BinanceFuturesClient()
@@ -63,6 +68,9 @@ class LiveTrader:
 
         # Persistence (signal events + live trades)
         self.store = TradeStore(self.config.db_path)
+        # Inject store into strategy for cooldown checks
+        if hasattr(self.strategy, '_store'):
+            self.strategy._store = self.store
 
         # Scanner — delegated to strategy
         self.scanner = self.strategy.create_scanner(
@@ -204,20 +212,90 @@ class LiveTrader:
                     f"\n[cyan]📡 {len(pending)} signal(s) detected, "
                     f"entering pending pool (10s delay)...[/cyan]"
                 )
+                logger.info(
+                    "📡 %d 个信号进入待执行池 (10s延迟)...", len(pending),
+                )
                 for s in pending:
                     self.console.print(
                         f"  [dim]• {s.symbol} surge={s.surge_ratio:.1f}x "
                         f"signal_price={s.price:.6f}[/dim]"
                     )
+                    logger.info(
+                        "  • %s surge=%.1fx signal_price=%.6f",
+                        s.symbol, s.surge_ratio, s.price,
+                    )
 
                 # Wait 10 seconds before executing entries
                 await asyncio.sleep(10)
 
-                # Execute pending signals ONE BY ONE (serialize live entries)
+                # ── Batch pre-filter: check positions ONCE ────────
+                # Avoids N separate get_position_risk() calls and
+                # prevents race conditions under high signal volume.
+                try:
+                    all_pos = await self.client.get_position_risk()
+                    open_pos = [p for p in all_pos if float(p.position_amt) != 0]
+                    open_symbols = {p.symbol for p in open_pos}
+                    open_count = len(open_pos)
+                except Exception as e:
+                    logger.warning("Failed to pre-check positions: %s", e)
+                    open_symbols = set()
+                    open_count = 0
+
                 # Sort by surge ratio descending — strongest signals first
                 pending.sort(key=lambda s: s.surge_ratio, reverse=True)
+
+                # Filter out already-in-position and record rejections
+                now_ts = utc_now()
+                filtered = []
+                for s in pending:
+                    if s.symbol in open_symbols:
+                        logger.info("⏭️ Skip %s: already in position", s.symbol)
+                        self.store.save_signal_event(SignalEvent(
+                            timestamp=now_ts.isoformat(), symbol=s.symbol,
+                            surge_ratio=s.surge_ratio, price=str(s.price),
+                            accepted=False, reject_reason="already in position",
+                        ))
+                    else:
+                        filtered.append(s)
+
+                # Cap at available position slots
+                available_slots = max(0, self.config.max_positions - open_count)
+                if available_slots == 0:
+                    for s in filtered:
+                        reason = (f"max positions reached ({open_count} exchange"
+                                  f" ≥ {self.config.max_positions})")
+                        logger.info("⏭️ Skip %s: %s", s.symbol, reason)
+                        self.store.save_signal_event(SignalEvent(
+                            timestamp=now_ts.isoformat(), symbol=s.symbol,
+                            surge_ratio=s.surge_ratio, price=str(s.price),
+                            accepted=False, reject_reason=reason,
+                        ))
+                    filtered = []
+                else:
+                    # Record overflow signals as rejected
+                    for s in filtered[available_slots:]:
+                        reason = (f"max positions reached ({open_count} exchange"
+                                  f" + {available_slots} slots used"
+                                  f" ≥ {self.config.max_positions})")
+                        logger.info("⏭️ Skip %s: %s", s.symbol, reason)
+                        self.store.save_signal_event(SignalEvent(
+                            timestamp=now_ts.isoformat(), symbol=s.symbol,
+                            surge_ratio=s.surge_ratio, price=str(s.price),
+                            accepted=False, reject_reason=reason,
+                        ))
+                    filtered = filtered[:available_slots]
+
+                if filtered:
+                    logger.info(
+                        "📡 Pre-filter: %d/%d signals → %d to execute "
+                        "(open=%d, slots=%d)",
+                        len(pending), len(pending), len(filtered),
+                        open_count, available_slots,
+                    )
+
+                # Execute filtered signals ONE BY ONE
                 live_pending: set[str] = set()  # track in-flight symbols
-                for i, s in enumerate(pending):
+                for i, s in enumerate(filtered):
                     if not self._running:
                         break
 
@@ -248,7 +326,7 @@ class LiveTrader:
                         live_pending.add(s.symbol)
                         # Wait between entries so exchange registers
                         # the position before the next guard check
-                        if i < len(pending) - 1:
+                        if i < len(filtered) - 1:
                             await asyncio.sleep(2)
 
             except asyncio.CancelledError:
@@ -279,12 +357,17 @@ class LiveTrader:
             combined_count = len(open_symbols | pending)
 
             if symbol in combined_symbols:
-                self.console.print(f"  [dim]Skip {symbol}: already in position (exchange/pending)[/dim]")
+                logger.info("⏭️ Skip %s: already in position (exchange/pending)", symbol)
+                self.store.save_signal_event(SignalEvent(
+                    timestamp=now.isoformat(), symbol=symbol,
+                    surge_ratio=signal.surge_ratio, price=str(signal.price),
+                    accepted=False, reject_reason="already in position",
+                ))
                 return False
             if combined_count >= self.config.max_positions:
                 reason = (f"max positions reached ({len(open_pos)} exchange"
                           f" + {len(pending)} pending ≥ {self.config.max_positions})")
-                self.console.print(f"  [dim]Skip {symbol}: {reason}[/dim]")
+                logger.info("⏭️ Skip %s: %s", symbol, reason)
                 self.store.save_signal_event(SignalEvent(
                     timestamp=now.isoformat(), symbol=symbol,
                     surge_ratio=signal.surge_ratio, price=str(signal.price),
@@ -396,7 +479,7 @@ class LiveTrader:
                     price=str(entry_price),
                     accepted=True,
                 ))
-                entry_side = "SHORT" if decision.side == "SELL" else "LONG"
+                entry_side = decision.side  # already "SHORT" or "LONG"
                 self.console.print(
                     f"  [green]🟢 LIVE ENTRY[/green] {symbol} {entry_side} @ {entry_price} "
                     f"(qty: {quantity:.4f})"
@@ -409,6 +492,8 @@ class LiveTrader:
                         side=entry_side,
                         quantity=str(quantity),
                         deferred_tp_sl=order_result["deferred_tp_sl"],
+                        tp_pct=decision.tp_pct,
+                        sl_pct=decision.sl_pct,
                     )
                 # Telegram notification
                 if self.notifier:
@@ -497,12 +582,20 @@ class LiveTrader:
                     ).astimezone(timezone.utc).strftime("%Y-%m-%d") == today_utc
                 )
 
+                # Save today's balance snapshot & get yesterday's
+                total_bal = bal['total_balance']
+                self.store.save_balance_snapshot(
+                    today_utc, total_bal, bal['unrealized_pnl'],
+                )
+                yesterday_bal = self.store.get_yesterday_balance(today_utc)
+
                 await self.notifier.notify_daily_summary(
-                    total_balance=f"{bal['total_balance']:,.2f}",
+                    total_balance=f"{total_bal:,.2f}",
                     daily_pnl=f"{daily_pnl:+,.2f}",
                     unrealized_pnl=f"{bal['unrealized_pnl']:+,.2f}",
                     open_positions=open_count,
                     trades_today=today_trades,
+                    yesterday_balance=f"{yesterday_bal:,.2f}" if yesterday_bal is not None else None,
                 )
                 logger.info("📊 已推送每日盈亏报告")
             except Exception as e:
@@ -516,7 +609,7 @@ class LiveTrader:
         """Print startup banner with real account data."""
         self.console.print()
         self.console.print("[bold cyan]" + "=" * 60 + "[/bold cyan]")
-        self.console.print("[bold cyan]🚀 Trader — Surge Short V2 | 🔴 实盘模式 (LIVE)[/bold cyan]")
+        self.console.print("[bold cyan]🚀 Trader — Rolling R24 | 🔴 实盘模式 (LIVE)[/bold cyan]")
         self.console.print("[bold cyan]" + "=" * 60 + "[/bold cyan]")
 
         # Fetch real account data from Binance
@@ -537,10 +630,11 @@ class LiveTrader:
         self.console.print(f"  Daily limit:  {self.config.daily_loss_limit_usdt} USDT")
         self.console.print(f"  Leverage:     {self.config.leverage}x")
         self.console.print(f"  Max pos:      {self.config.max_positions}")
-        self.console.print(f"  TP:           {self.config.strong_tp_pct}/{self.config.medium_tp_pct}/{self.config.weak_tp_pct}%")
-        self.console.print(f"  SL:           {self.config.stop_loss_pct}%")
-        self.console.print(f"  Max hold:     {self.config.max_hold_hours}h")
-        self.console.print(f"  Surge thr:    {self.config.surge_threshold}x")
+        rc = self.rolling_config
+        if rc:
+            self.console.print(f"  TP:           {rc.tp_initial * 100:.0f}%")
+            self.console.print(f"  SL:           {rc.sl_threshold * 100:.0f}%")
+            self.console.print(f"  Max hold:     {rc.max_hold_days * 24}h")
         self.console.print(f"  Monitor intv: {self.config.monitor_interval_seconds}s")
         auto_status = "[green]开启[/green]" if self.auto_trade_enabled else "[red]关闭[/red]"
         self.console.print(f"  Auto trade:   {auto_status}")

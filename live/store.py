@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS position_state (
     evaluated_12h INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+
+-- Daily balance snapshots for daily report comparison
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    date TEXT PRIMARY KEY,
+    total_balance REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -235,3 +243,26 @@ class TradeStore:
                 "DELETE FROM position_state WHERE symbol = ?", (symbol,)
             )
             self._conn.commit()
+
+    # ── Balance Snapshots ──────────────────────────────────────────────
+
+    def save_balance_snapshot(self, date: str, total_balance: float, unrealized_pnl: float = 0) -> None:
+        """Save or update a daily balance snapshot (upsert by date)."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO balance_snapshots (date, total_balance, unrealized_pnl)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(date) DO UPDATE SET
+                     total_balance = excluded.total_balance,
+                     unrealized_pnl = excluded.unrealized_pnl""",
+                (date, total_balance, unrealized_pnl),
+            )
+            self._conn.commit()
+
+    def get_yesterday_balance(self, today: str) -> float | None:
+        """Get the most recent balance snapshot before today."""
+        row = self._conn.execute(
+            "SELECT total_balance FROM balance_snapshots WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (today,),
+        ).fetchone()
+        return row["total_balance"] if row else None

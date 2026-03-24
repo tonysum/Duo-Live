@@ -179,6 +179,7 @@ class BinanceFuturesClient:
                 httpx.TimeoutException,
                 httpx.RemoteProtocolError,  # EndOfStream, etc.
                 httpx.ReadError,
+                httpx.ProxyError,           # 503 proxy failures
             ) as e:
                 last_exc = e
                 if attempt < self._MAX_RETRIES - 1:
@@ -259,11 +260,11 @@ class BinanceFuturesClient:
     ) -> list[Kline]:
         """Get kline/candlestick data."""
         params: dict[str, Any] = {"symbol": symbol, "interval": interval}
-        if start_time:
+        if start_time is not None:
             params["startTime"] = start_time
-        if end_time:
+        if end_time is not None:
             params["endTime"] = end_time
-        if limit:
+        if limit is not None:
             params["limit"] = limit
         data = await self._request("GET", "/fapi/v1/klines", params)
         return [Kline.from_array(k) for k in data]
@@ -286,6 +287,14 @@ class BinanceFuturesClient:
         if isinstance(data, list):
             return [TickerPrice.model_validate(t) for t in data]
         return TickerPrice.model_validate(data)
+
+    async def get_24hr_tickers(self) -> list[dict]:
+        """Fetch 24hr ticker for ALL symbols (single API call).
+
+        Returns list of dicts with keys including: symbol, priceChangePercent,
+        lastPrice, volume, quoteVolume, etc.
+        """
+        return await self._request("GET", "/fapi/v1/ticker/24hr")
 
     # =========================================================================
     # Trade Endpoints (authenticated)

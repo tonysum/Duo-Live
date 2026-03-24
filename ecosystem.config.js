@@ -9,8 +9,8 @@ module.exports = {
             env: {
                 // 从 .env 文件加载，或直接写在这里
                 // BINANCE_API_KEY: "",
-                // BINANCE_API_SECRET: "",
-                // TELEGRAM_BOT_TOKEN: "",
+                // TELEGRAM                // BINANCE_API_SECRET: "",
+_BOT_TOKEN: "",
                 // TELEGRAM_CHAT_ID: "",
                 // TRADING_PASSWORD: "",
             },
