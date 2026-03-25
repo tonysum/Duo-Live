@@ -39,7 +39,7 @@ server {
     listen 80;
     server_name your-domain.com;  # 替换为你的域名或 IP
 
-    # ── 前端 (Next.js on port 3000) ──────────────────────
+    # ── 前端 (Vite 构建静态站，serve :3000) ───────────────
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
@@ -147,7 +147,7 @@ Client (Browser)
        ▼
    Nginx (:80/443)
        │
-       ├── /          → Next.js (:3000)   前端
+       ├── /          → 静态前端 (:3000)   前端
        ├── /api/*     → FastAPI (:8899)   后端 API
        └── /ws        → FastAPI (:8899)   WebSocket
 ```

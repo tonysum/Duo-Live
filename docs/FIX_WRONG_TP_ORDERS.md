@@ -53,15 +53,9 @@
    - 定期验证止盈单方向
    - 自动修复错误的止盈单
 
-## 手动修复脚本（备用）
+## 手动干预
 
-如果需要立即修复所有错误的止盈单，可以运行：
-
-```bash
-python scripts/fix_wrong_tp_orders.py
-```
-
-但通常不需要，因为系统会在下一个监控周期（最多60秒）自动修复。
+已无独立修复脚本；错误方向会在**下一个监控周期**（默认约 60 秒）内由 `live_position_monitor` 自动处理。若急需同步状态，可重启后端：`pm2 restart duo-live-backend`。
 
 ## 监控和验证
 
@@ -103,9 +97,6 @@ pm2 restart duo-live-backend
 
 # 2. 查看日志确认监控循环正常
 tail -f logs/duo-live.log | grep "检查持仓"
-
-# 3. 如果仍有问题，运行手动修复脚本
-python scripts/fix_wrong_tp_orders.py
 ```
 
 ### 问题：修复后又出现错误的止盈单

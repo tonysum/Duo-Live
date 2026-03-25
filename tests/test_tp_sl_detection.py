@@ -71,13 +71,13 @@ def _mock_position_risk(symbol, position_amt):
 
 class TestGetExchangePositionAmt:
     @pytest.mark.asyncio
-    async def test_returns_position_amt(self, config):
+    async def test_returns_signed_short_position_amt(self, config):
         mon = _make_monitor(config)
         pr = _mock_position_risk("BTCUSDT", -0.01)
         mon.client.get_position_risk = AsyncMock(return_value=[pr])
 
         result = await mon._get_exchange_position_amt("BTCUSDT")
-        assert result == 0.01
+        assert result == -0.01
 
     @pytest.mark.asyncio
     async def test_returns_zero_when_no_position(self, config):
@@ -182,6 +182,7 @@ class TestSLTriggerDetection:
         # Only TP is still open (SL disappeared)
         tp_algo = MagicMock()
         tp_algo.algo_id = 100
+        tp_algo.side = "BUY"
         mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo])
         # Position is closed on exchange
         pr = _mock_position_risk("BTCUSDT", 0)
@@ -209,6 +210,7 @@ class TestSLTriggerDetection:
         # Only TP is still open (SL disappeared)
         tp_algo = MagicMock()
         tp_algo.algo_id = 100
+        tp_algo.side = "BUY"  # SHORT 平仓必须用 BUY，否则会触发「止盈方向错误」分支
         mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo])
         # Position still exists on exchange
         pr = _mock_position_risk("BTCUSDT", -0.01)
@@ -348,6 +350,9 @@ class TestAlgoIdNoneFallback:
         # TP is still open
         tp_algo = MagicMock()
         tp_algo.algo_id = 100
+        tp_algo.side = "BUY"
+        pr = _mock_position_risk("BTCUSDT", -0.01)
+        mon.client.get_position_risk = AsyncMock(return_value=[pr])
         mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo])
         mon._re_place_single_order = AsyncMock()
         mon.strategy = None
@@ -369,11 +374,14 @@ class TestAlgoIdNoneFallback:
 
         mon._positions["BTCUSDT"] = pos
         # Both still open
-        tp_algo = MagicMock()
-        tp_algo.algo_id = 100
+        tp_lo = MagicMock()
+        tp_lo.algo_id = 100
+        tp_lo.side = "BUY"
         sl_algo = MagicMock()
         sl_algo.algo_id = 200
-        mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_algo, sl_algo])
+        pr = _mock_position_risk("BTCUSDT", -0.01)
+        mon.client.get_position_risk = AsyncMock(return_value=[pr])
+        mon.client.get_open_algo_orders = AsyncMock(return_value=[tp_lo, sl_algo])
         mon._re_place_single_order = AsyncMock()
         mon.strategy = None
         mon._update_dynamic_tp = AsyncMock()

@@ -4,7 +4,7 @@ Strategy-independent parameters for the live trading system.
 Strategy-specific parameters live in rolling_config.py.
 """
 
-from dataclasses import dataclass, fields, asdict
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 import json
@@ -24,9 +24,9 @@ class LiveTradingConfig:
     """
 
     # ── Capital & Leverage ──────────────────────────────────────────────
-    leverage: int = 2
-    max_positions: int = 7
-    max_entries_per_day: int = 2
+    leverage: int = 3
+    max_positions: int = 8
+    max_entries_per_day: int = 8
     live_fixed_margin_usdt: Decimal = Decimal("5")  # 固定保证金 (USDT/笔)
     daily_loss_limit_usdt: Decimal = Decimal("50")   # 每日亏损限额 (0=不限)
     margin_mode: str = "fixed"  # "fixed" 或 "percent"

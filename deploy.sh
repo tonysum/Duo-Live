@@ -22,15 +22,12 @@ echo "📦 Step 2: 同步 Python 依赖..."
 .venv/bin/pip install -r requirements.txt
 echo ""
 
-# 3. 构建前端 (standalone 模式)
+# 3. 构建前端 (Vite → dist/)
 echo "🔨 Step 3: 构建前端..."
 cd web
-rm -rf .next
+rm -rf dist
 npm install --frozen-lockfile 2>/dev/null || npm install
 npm run build
-# standalone 模式需要手动拷贝 static 资源
-cp -r .next/static .next/standalone/.next/static
-[ -d public ] && cp -r public .next/standalone/public
 cd ..
 echo ""
 

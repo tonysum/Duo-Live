@@ -270,7 +270,7 @@ grep "发送邮件报警失败" logs/duo-live.log
 - ✅ 配置完成后，启动 duo-live 系统
 - ✅ 系统会在紧急情况自动发送邮件
 - ✅ 定期检查邮箱，确保能收到报警
-- ✅ 如有问题，查看 [完整文档](improvements-from-ae-server.md)
+- ✅ 如有问题，检查 `.env` 与发件邮箱 SMTP 设置，并查看项目 `README.md`
 
 ---
 
