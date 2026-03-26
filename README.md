@@ -96,7 +96,7 @@ duo-live/
 │   ├── strategy.py              # Strategy ABC，EntryDecision / PositionAction
 │   ├── rolling_live_strategy.py # RollingLiveStrategy（R24）
 │   ├── rolling_scanner.py       # RollingLiveScanner（24h 涨幅扫描）
-│   ├── rolling_config.py        # RollingLiveConfig；可选 r24_params.json
+│   ├── rolling_config.py        # RollingLiveConfig；从 data/config.json 的 rolling 读取
 │   ├── live_config.py           # LiveTradingConfig；data/config.json
 │   ├── live_executor.py         # 下单、TP/SL 条件单
 │   ├── live_position_monitor.py # 持仓与条件单生命周期
@@ -111,8 +111,7 @@ duo-live/
 │   └── models.py                # SurgeSignal 等
 ├── web/                         # Vite + React 看板（`npm run build` → dist/）
 ├── tests/
-├── data/                        # trades.db、config.json
-├── r24_params.json              # 可选：策略+部分资金参数覆盖（见 rolling_config）
+├── data/                        # trades.db、config.json（含可选 rolling 策略块）
 ├── ecosystem.config.js          # PM2
 └── deploy.sh
 ```
@@ -155,9 +154,11 @@ duo-live/
 | `trailing_activation_pct` / `trailing_distance_pct` | 0.16 / 0.09 | 追踪止损 |
 | `enable_add_position` / `add_position_threshold` | true / 0.36 | 加仓 |
 
-可在 **`r24_params.json`**（或 `r2_params.json`）或环境变量 **`DUO_LIVE_PARAMS_FILE`** 中覆盖上述字段及 **`LiveTradingConfig`** 的可变项（如 `leverage`、`max_positions`）。逻辑见 `rolling_config.apply_strategy_params_from_json`。
+策略数值（上表中的 `top_n`、`min_pct_chg`、`tp_initial` 等）写在 **`data/config.json`** 的 **`"rolling"`** 对象里；与资金相关的可变项写在同一文件的顶层（`leverage`、`max_positions` 等）。加载逻辑见 `rolling_config.load_rolling_from_config_json` 与 `LiveTradingConfig.load_from_file`。
 
-### `LiveTradingConfig`（`data/config.json`）
+### `data/config.json`
+
+**顶层**（`LiveTradingConfig`，API/前端可写）：
 
 | 字段 | 默认 | 含义 |
 |------|------|------|
@@ -168,7 +169,10 @@ duo-live/
 | `daily_loss_limit_usdt` | 50 | 日亏限额（0 不限） |
 | `margin_mode` | fixed | fixed / percent |
 | `margin_pct` | 2.0 | percent 模式下余额比例 |
-| `monitor_interval_seconds` | 60 | 监控轮询间隔 |
+
+`monitor_interval_seconds` 等仅在代码默认值中配置，不写入 JSON。
+
+**`"rolling"`**（可选）：与上表「代码默认（RollingLiveConfig）」同名字段，用于覆盖 R24 扫描与止盈止损参数；缺少的字段沿用代码默认。
 
 ### 自定义策略
 
@@ -208,8 +212,7 @@ python -m live test-notify
 
 ## 配置说明
 
-- **资金与全局**：`live/live_config.py` + `data/config.json`（API/前端可写）。  
-- **R24 策略**：`live/rolling_config.py` + 可选 **`r24_params.json`**。  
+- **资金与 R24 策略**：同一文件 **`data/config.json`**（顶层 = 资金/杠杆等；`rolling` = 策略参数）；API 保存顶层时会保留 `rolling` 块。  
 - **示例环境变量**：`.env.example`。
 
 ---
@@ -225,7 +228,6 @@ TRADING_PASSWORD=              # 看板手动下单（可选）
 SMTP_EMAIL=
 SMTP_PASSWORD=
 ALERT_EMAIL=
-DUO_LIVE_PARAMS_FILE=         # 可选：自定义策略 JSON 路径
 ```
 
 邮件说明见 [docs/QUICK_START_EMAIL.md](docs/QUICK_START_EMAIL.md)。

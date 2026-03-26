@@ -3,6 +3,7 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type Time,
   CandlestickSeries,
   HistogramSeries,
   createSeriesMarkers,
@@ -37,10 +38,8 @@ export default function TradeChart({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const candleRef = useRef<ISeriesApi<any> | null>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const volumeRef = useRef<ISeriesApi<any> | null>(null)
+  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null)
+  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null)
   const initialFitDone = useRef(false)
 
   // Create chart once
@@ -145,9 +144,8 @@ export default function TradeChart({
     const volumeSeries = volumeRef.current
     if (!chart || !candleSeries || !volumeSeries || klines.length === 0) return
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const candleData = klines.map((k) => ({
-      time: k.time as any,
+      time: k.time as Time,
       open: k.open,
       high: k.high,
       low: k.low,
@@ -155,9 +153,8 @@ export default function TradeChart({
     }))
     candleSeries.setData(candleData)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const volData = klines.map((k) => ({
-      time: k.time as any,
+      time: k.time as Time,
       value: k.volume,
       color: k.close >= k.open ? "#34D39990" : "#F8717180",
     }))
@@ -165,9 +162,8 @@ export default function TradeChart({
 
     // Markers
     if (markers.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const lwMarkers = markers.map((m) => ({
-        time: m.time as any,
+        time: m.time as Time,
         position:
           m.type === "entry"
             ? ("belowBar" as const)
@@ -187,17 +183,8 @@ export default function TradeChart({
 
     // Price lines
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const lines: any[] = []
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((candleSeries as any).priceLines) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        for (const line of (candleSeries as any).priceLines()) {
-          lines.push(line)
-        }
-        for (const line of lines) {
-          candleSeries.removePriceLine(line)
-        }
+      for (const line of candleSeries.priceLines()) {
+        candleSeries.removePriceLine(line)
       }
     } catch {
       // ignore
@@ -258,17 +245,15 @@ export default function TradeChart({
     const volumeSeries = volumeRef.current
 
     onRealtimeUpdate((kline: Kline) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       candleSeries.update({
-        time: kline.time as any,
+        time: kline.time as Time,
         open: kline.open,
         high: kline.high,
         low: kline.low,
         close: kline.close,
       })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       volumeSeries.update({
-        time: kline.time as any,
+        time: kline.time as Time,
         value: kline.volume,
         color: kline.close >= kline.open ? "#34D39990" : "#F8717180",
       })

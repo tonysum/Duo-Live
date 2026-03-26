@@ -20,11 +20,9 @@ import asyncio
 import logging
 import sys
 from decimal import Decimal
-from pathlib import Path
-
 from dotenv import load_dotenv
 
-from .live_config import LiveTradingConfig
+from .live_config import CONFIG_PATH, LiveTradingConfig
 from .trader import LiveTrader
 
 
@@ -569,13 +567,10 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         auto_trade = "auto-trade" in run_flags
 
         # ── Strategy: Rolling R24 ──────────────────────────────────
-        from .rolling_config import (
-            RollingLiveConfig,
-            apply_strategy_params_from_json,
-        )
+        from .rolling_config import RollingLiveConfig, load_rolling_from_config_json
         from .rolling_live_strategy import RollingLiveStrategy
         rolling_config = RollingLiveConfig()
-        params_path = apply_strategy_params_from_json(rolling_config, config)
+        load_rolling_from_config_json(rolling_config, CONFIG_PATH)
         strategy = RollingLiveStrategy(config=rolling_config)
 
         # ── Startup confirmation ──────────────────────────────
@@ -599,8 +594,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print(f"  最大持仓数:  {config.max_positions}")
         print(f"  新币过滤:   {rolling_config.min_listed_days}d")
         print(f"  信号冷却:   {rolling_config.signal_cooldown_hours}h")
-        if params_path:
-            print(f"  参数文件:   {Path(params_path).resolve()}")
+        print(f"  配置文件:   {CONFIG_PATH.resolve()}")
 
         print(f"  自动交易:   {'开启' if auto_trade else '关闭 (可在前端开启)'}")
         print()

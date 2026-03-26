@@ -46,8 +46,17 @@ class LiveTradingConfig:
     }
 
     def save_to_file(self, path: Path = CONFIG_PATH) -> None:
-        """Save mutable config fields to JSON."""
+        """Save mutable config fields to JSON; preserve ``rolling`` block if present."""
         path.parent.mkdir(parents=True, exist_ok=True)
+        rolling_block: dict = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text())
+                rb = existing.get("rolling")
+                if isinstance(rb, dict):
+                    rolling_block = rb
+            except (OSError, json.JSONDecodeError):
+                pass
         data = {
             "leverage": self.leverage,
             "max_positions": self.max_positions,
@@ -57,6 +66,8 @@ class LiveTradingConfig:
             "margin_mode": self.margin_mode,
             "margin_pct": self.margin_pct,
         }
+        if rolling_block:
+            data["rolling"] = rolling_block
         path.write_text(json.dumps(data, indent=2))
         logger.info("Config saved to %s", path)
 
@@ -64,24 +75,34 @@ class LiveTradingConfig:
     def load_from_file(cls, path: Path = CONFIG_PATH) -> "LiveTradingConfig":
         """Create config, overriding defaults with values from JSON if it exists."""
         config = cls()
-        if path.exists():
-            try:
-                data = json.loads(path.read_text())
-                if "leverage" in data:
-                    config.leverage = int(data["leverage"])
-                if "max_positions" in data:
-                    config.max_positions = int(data["max_positions"])
-                if "max_entries_per_day" in data:
-                    config.max_entries_per_day = int(data["max_entries_per_day"])
-                if "live_fixed_margin_usdt" in data:
-                    config.live_fixed_margin_usdt = Decimal(str(data["live_fixed_margin_usdt"]))
-                if "daily_loss_limit_usdt" in data:
-                    config.daily_loss_limit_usdt = Decimal(str(data["daily_loss_limit_usdt"]))
-                if "margin_mode" in data:
-                    config.margin_mode = data["margin_mode"]
-                if "margin_pct" in data:
-                    config.margin_pct = float(data["margin_pct"])
-                logger.info("Config loaded from %s", path)
-            except Exception as e:
-                logger.warning("Failed to load config from %s: %s", path, e)
+        config.apply_partial_from_file(path, exclude_keys=frozenset())
         return config
+
+    def apply_partial_from_file(
+        self,
+        path: Path = CONFIG_PATH,
+        exclude_keys: frozenset[str] | set[str] | None = None,
+    ) -> None:
+        """Merge mutable fields from JSON; skip keys in ``exclude_keys``. Ignores ``rolling``."""
+        ex = frozenset(exclude_keys) if exclude_keys is not None else frozenset()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            if "leverage" in data and "leverage" not in ex:
+                self.leverage = int(data["leverage"])
+            if "max_positions" in data and "max_positions" not in ex:
+                self.max_positions = int(data["max_positions"])
+            if "max_entries_per_day" in data and "max_entries_per_day" not in ex:
+                self.max_entries_per_day = int(data["max_entries_per_day"])
+            if "live_fixed_margin_usdt" in data and "live_fixed_margin_usdt" not in ex:
+                self.live_fixed_margin_usdt = Decimal(str(data["live_fixed_margin_usdt"]))
+            if "daily_loss_limit_usdt" in data and "daily_loss_limit_usdt" not in ex:
+                self.daily_loss_limit_usdt = Decimal(str(data["daily_loss_limit_usdt"]))
+            if "margin_mode" in data and "margin_mode" not in ex:
+                self.margin_mode = data["margin_mode"]
+            if "margin_pct" in data and "margin_pct" not in ex:
+                self.margin_pct = float(data["margin_pct"])
+            logger.info("Config loaded from %s (excluded keys: %s)", path, ", ".join(sorted(ex)) or "-")
+        except Exception as e:
+            logger.warning("Failed to load config from %s: %s", path, e)

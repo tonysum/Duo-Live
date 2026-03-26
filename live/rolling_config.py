@@ -3,28 +3,20 @@
 Mirrors RollingConfig from duo-moonshot/moonshot/rolling_strategy.py,
 adapted for the duo-live LiveTrader framework.
 
-External param bundle (optional):
-  - Place ``r24_params.json`` in the project cwd (optional fallback: ``r2_params.json``),
-    or set env ``DUO_LIVE_PARAMS_FILE`` to a path.
-  - Format: ``{"params": { ... }}`` or a flat object. Recognized keys map to
-    :class:`RollingLiveConfig` and mutable :class:`~live.live_config.LiveTradingConfig`
-    fields (e.g. ``leverage``, ``max_positions``). Unknown keys are logged and skipped.
+R24 strategy overrides live in ``data/config.json`` under the ``"rolling"`` key
+(same file as :class:`~live.live_config.LiveTradingConfig` mutable fields).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field, fields
-from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .live_config import LiveTradingConfig
 
 logger = logging.getLogger(__name__)
+
+ROLLING_JSON_KEY = "rolling"
 
 
 @dataclass
@@ -69,24 +61,6 @@ class RollingLiveConfig:
     add_position_multiplier: float = 0.08
 
 
-def resolve_strategy_params_path(explicit: Path | None = None) -> Path | None:
-    """First existing path wins: explicit → DUO_LIVE_PARAMS_FILE → r24_params.json → r2_params.json."""
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
-    env = os.environ.get("DUO_LIVE_PARAMS_FILE")
-    if env:
-        candidates.append(Path(env))
-    candidates.extend(Path(n) for n in ("r24_params.json", "r2_params.json"))
-    for p in candidates:
-        try:
-            if p.is_file():
-                return p
-        except OSError:
-            continue
-    return None
-
-
 def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> None:
     cur = getattr(cfg, name)
     if name == "main_profit_thresholds" and isinstance(value, list):
@@ -107,80 +81,47 @@ def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> No
         logger.warning("Unsupported list field override: %s", name)
 
 
-def _apply_live_field(live: LiveTradingConfig, name: str, value: object) -> None:
-    from .live_config import LiveTradingConfig as _LC
-
-    if name not in _LC.MUTABLE_FIELDS:
-        return
-    if name in ("live_fixed_margin_usdt", "daily_loss_limit_usdt"):
-        setattr(live, name, Decimal(str(value)))
-    elif name == "margin_pct":
-        setattr(live, name, float(value))
-    elif name == "margin_mode":
-        setattr(live, name, str(value))
-    else:
-        setattr(live, name, int(value))
-
-
-def apply_strategy_params_from_json(
+def load_rolling_from_config_json(
     rolling: RollingLiveConfig,
-    live: LiveTradingConfig,
-    json_path: Path | None = None,
-) -> Path | None:
-    """Load strategy/capital params from JSON and override ``rolling`` and ``live``.
+    path: Path | None = None,
+) -> bool:
+    """Read ``"rolling"`` from ``data/config.json`` and apply to ``rolling``.
 
-    Returns the path loaded, or ``None`` if no file or parse error.
-    Precedence for this call: values in the JSON replace current attributes on
-    ``rolling`` / ``live`` (typically after ``LiveTradingConfig.load_from_file()``).
-
-    Args:
-        rolling: Strategy config instance to mutate.
-        live: Live trading config instance to mutate.
-        json_path: If set, only try this path (must exist).
+    Returns True if a non-empty rolling object was found and processed.
     """
-    from .live_config import LiveTradingConfig as _LC
+    from .live_config import CONFIG_PATH
 
-    path = json_path if json_path is not None else resolve_strategy_params_path()
-    if path is None:
-        return None
+    p = path or CONFIG_PATH
+    if not p.is_file():
+        return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning("Strategy params file unreadable %s: %s", path, e)
-        return None
-
-    params = raw.get("params", raw)
-    if not isinstance(params, dict):
-        logger.warning("Strategy params: expected object or 'params' object in %s", path)
-        return None
-
+        logger.warning("Could not read config for rolling: %s", e)
+        return False
+    block = raw.get(ROLLING_JSON_KEY)
+    if not isinstance(block, dict) or not block:
+        return False
     rolling_names = {f.name for f in fields(RollingLiveConfig)}
-    applied_live: list[str] = []
-    applied_roll: list[str] = []
+    applied: list[str] = []
     unknown: list[str] = []
-
-    for k, v in params.items():
+    for k, v in block.items():
         if v is None:
             continue
-        if k in _LC.MUTABLE_FIELDS:
-            _apply_live_field(live, k, v)
-            applied_live.append(k)
-        elif k in rolling_names:
+        if k in rolling_names:
             _apply_rolling_field(rolling, k, v)
-            applied_roll.append(k)
+            applied.append(k)
         else:
             unknown.append(k)
-
     if unknown:
         logger.info(
-            "Strategy params %s: keys not mapped in duo-live (ignored): %s",
-            path,
+            "config.json rolling: unknown keys (ignored): %s",
             ", ".join(sorted(unknown)),
         )
     logger.info(
-        "Strategy params from %s — live: [%s], rolling: [%s]",
-        path,
-        ", ".join(applied_live) or "-",
-        ", ".join(applied_roll) or "-",
+        "Rolling params from %s [%s] — applied: [%s]",
+        p,
+        ROLLING_JSON_KEY,
+        ", ".join(applied) or "-",
     )
-    return path
+    return True
