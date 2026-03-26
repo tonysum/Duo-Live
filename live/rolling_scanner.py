@@ -21,6 +21,23 @@ from .rolling_config import RollingLiveConfig
 logger = logging.getLogger(__name__)
 
 
+def _next_scan_utc(now: datetime, interval_h: int) -> datetime:
+    """Next scan time: UTC hour on grid ``0, interval_h, 2*interval_h, ...``, at ``:00:05``."""
+    if interval_h < 1:
+        interval_h = 1
+    base = now.replace(minute=0, second=0, microsecond=0)
+    qh = (now.hour // interval_h) * interval_h
+    candidate = now.replace(hour=qh, minute=0, second=5, microsecond=0)
+    if candidate > now:
+        return candidate
+    nh = qh + interval_h
+    if nh < 24:
+        return base.replace(hour=nh, minute=0, second=5, microsecond=0)
+    return (base + timedelta(days=1)).replace(
+        hour=0, minute=0, second=5, microsecond=0,
+    )
+
+
 class RollingLiveScanner:
     """24h rolling top gainer scanner for live trading.
 
@@ -84,30 +101,13 @@ class RollingLiveScanner:
 
         while self.running:
             now = datetime.now(timezone.utc)
-
-            # Wait until next scan boundary
             interval_h = self.config.scan_interval_hours
-            next_hour = (now + timedelta(hours=1)).replace(
-                minute=0, second=5, microsecond=0,
-            )
-            # Align to interval (e.g. every 4h → scan at 0,4,8,12,16,20)
-            if interval_h > 1:
-                target_hour = ((next_hour.hour // interval_h) + 1) * interval_h
-                if target_hour >= 24:
-                    next_hour = (next_hour + timedelta(days=1)).replace(
-                        hour=0, minute=0, second=5, microsecond=0,
-                    )
-                else:
-                    next_hour = next_hour.replace(
-                        hour=target_hour, minute=0, second=5, microsecond=0,
-                    )
-                if next_hour <= now:
-                    next_hour += timedelta(hours=interval_h)
-
-            wait_seconds = (next_hour - now).total_seconds()
-            logger.debug(
-                "⏳ 下次扫描: %s UTC (%.0f秒后)",
-                next_hour.strftime("%H:%M:%S"), wait_seconds,
+            next_scan = _next_scan_utc(now, interval_h)
+            wait_seconds = (next_scan - now).total_seconds()
+            logger.info(
+                "⏳ 下次 R24 定时扫描: %s UTC (约 %.0f 秒后)",
+                next_scan.strftime("%Y-%m-%d %H:%M:%S"),
+                wait_seconds,
             )
             await asyncio.sleep(wait_seconds)
 

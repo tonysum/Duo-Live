@@ -7,6 +7,7 @@ module.exports = {
             args: "-m live run --auto-trade",
             cwd: "./",
             env: {
+                TZ: "UTC",
                 // 从 .env 文件加载，或直接写在这里
                 // BINANCE_API_KEY: "",
                 // BINANCE_API_SECRET: "",
@@ -27,6 +28,7 @@ module.exports = {
             args: "start.sh",
             cwd: "./web",
             env: {
+                TZ: "UTC",
                 PORT: 3000,
             },
             restart_delay: 3000,

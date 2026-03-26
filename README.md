@@ -220,6 +220,7 @@ python -m live test-notify
 ## 环境变量
 
 ```bash
+TZ=UTC                         # PM2 ecosystem 已设为 UTC；本地调试也可统一
 BINANCE_API_KEY=
 BINANCE_API_SECRET=
 TELEGRAM_BOT_TOKEN=
@@ -229,6 +230,8 @@ SMTP_EMAIL=
 SMTP_PASSWORD=
 ALERT_EMAIL=
 ```
+
+日志：`python -m live` 的控制台与 `logs/duo-live.log` 中 `%(asctime)s` 使用 **UTC**（见 `__main__.py`）；PM2 前缀时间依赖子进程 `TZ=UTC`（见 `ecosystem.config.js`）。
 
 邮件说明见 [docs/QUICK_START_EMAIL.md](docs/QUICK_START_EMAIL.md)。
 
