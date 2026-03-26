@@ -1,0 +1,12 @@
+---
+description: live/ 下 Python 模块习惯（FastAPI、异步、存储）
+globs: live/**/*.py
+alwaysApply: false
+---
+
+# `live/` Python
+
+- 与 **Binance Futures** 的交互经封装好的 client；新增接口时对齐官方 REST/WS 语义，注意频率与签名错误处理。
+- **FastAPI**：路由与模型放在 `api.py` 或与之同风格的模块；对外 JSON 字段名稳定，避免重命名破坏看板。
+- **异步**：`async` 路径上避免阻塞 IO；长轮询/WS 循环用 `asyncio.sleep`，勿用 `time.sleep` 占住事件循环。
+- **存储**：`store` / SQLite 写入使用可序列化类型；引用 `TradeStore` 既有方法而非重复 SQL 散落各处。

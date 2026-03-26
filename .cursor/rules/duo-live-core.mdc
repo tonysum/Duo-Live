@@ -1,0 +1,13 @@
+---
+description: duo-live 项目概览与通用约束（实盘 / UTC / 配置）
+alwaysApply: true
+---
+
+# duo-live — 核心上下文
+
+- **栈**：Python 实盘 + FastAPI（默认 `:8899`）；前端 `web/`（Vite + React + TypeScript）。
+- **实盘**：修改 `live/trader.py`、`live/*executor*`、`*monitor*`、`rolling_*`、下单与 REST 调用时， assume 可能影响真实订单；改动保持最小、可审阅。
+- **时区**：扫描对齐、日志与展示时间遵循项目的 **UTC** 约定；不要在不读上下文的情况下改为“仅本地时区”。
+- **配置**：live 参数以 `data/config.json`（及 README 记载的环境变量）为主；避免新增与现有合并逻辑冲突的平行配置文件。
+- **类型与 API**：后端 `PositionItem` 等模型与 `web/src/lib/api.ts` 类型、`/ws/live` 的 JSON 字段保持一致；SQLite 写入前勿直接塞 `Decimal`（需转为 `float` 等可序列化类型）。
+- **测试**：Python 用 `pytest`；前端改 TS/TSX 后跑 `npm run build`（及项目已有的 `lint`）。

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef, useCallback } from "react"
 import { api, Position, OpenOrder } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
@@ -11,6 +11,13 @@ import {
     Loader2,
     ClipboardList,
 } from "lucide-react"
+
+function formatMarkPrice(p: number) {
+    if (!p || !Number.isFinite(p)) return "—"
+    if (p >= 1000) return p.toFixed(2)
+    if (p >= 1) return p.toFixed(4)
+    return p.toFixed(6)
+}
 
 function formatTime(ts: number) {
     if (!ts) return "—"
@@ -42,8 +49,34 @@ export default function PositionsPage() {
     const [orders, setOrders] = useState<OpenOrder[]>([])
     const [closing, setClosing] = useState<string | null>(null)
     const [error, setError] = useState("")
+    /** WebSocket 已连接且收到过 payload 时为 true；断线时用 REST 兜底 */
+    const [liveWsOk, setLiveWsOk] = useState(false)
+    const wsAttemptRef = useRef(0)
 
-    const fetchData = async () => {
+    const fetchOrders = useCallback(async () => {
+        try {
+            const o = await api.getOrders()
+            setOrders(o)
+            setError("")
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : "Failed to fetch"
+            setError(message)
+        }
+    }, [])
+
+    const fetchPositionsRest = useCallback(async () => {
+        try {
+            const p = await api.getPositions()
+            setPositions(p)
+            setError("")
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : "Failed to fetch"
+            setError(message)
+        }
+    }, [])
+
+    // 首屏 + 平仓后刷新
+    const fetchAll = useCallback(async () => {
         try {
             const [p, o] = await Promise.all([api.getPositions(), api.getOrders()])
             setPositions(p)
@@ -53,12 +86,79 @@ export default function PositionsPage() {
             const message = err instanceof Error ? err.message : "Failed to fetch"
             setError(message)
         }
-    }
+    }, [])
 
     useEffect(() => {
-        fetchData()
-        const iv = setInterval(fetchData, 5000)
+        void fetchAll()
+    }, [fetchAll])
+
+    // 挂单仍用 REST 周期拉取（未在 /ws/live 里带 orders）
+    useEffect(() => {
+        const iv = setInterval(fetchOrders, 5000)
         return () => clearInterval(iv)
+    }, [fetchOrders])
+
+    // 持仓：/ws/live 推送；断线时每 5s REST 兜底
+    useEffect(() => {
+        if (liveWsOk) return
+        const iv = setInterval(fetchPositionsRest, 5000)
+        return () => clearInterval(iv)
+    }, [liveWsOk, fetchPositionsRest])
+
+    useEffect(() => {
+        let alive = true
+        let ws: WebSocket | null = null
+        let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+
+        const connect = () => {
+            if (!alive) return
+            wsAttemptRef.current += 1
+            const url = api.wsLiveUrl()
+            try {
+                ws = new WebSocket(url)
+            } catch {
+                setLiveWsOk(false)
+                reconnectTimer = setTimeout(connect, 4000)
+                return
+            }
+
+            ws.onopen = () => {
+                if (!alive) return
+                wsAttemptRef.current = 0
+                setLiveWsOk(true)
+            }
+
+            ws.onmessage = (ev) => {
+                if (!alive) return
+                try {
+                    const data = JSON.parse(ev.data as string)
+                    if (data.type === "status" && Array.isArray(data.positions)) {
+                        setPositions(data.positions as Position[])
+                    }
+                } catch {
+                    /* ignore */
+                }
+            }
+
+            ws.onerror = () => {
+                setLiveWsOk(false)
+            }
+
+            ws.onclose = () => {
+                setLiveWsOk(false)
+                if (!alive) return
+                const delay = Math.min(3000 * wsAttemptRef.current, 30_000)
+                reconnectTimer = setTimeout(connect, delay)
+            }
+        }
+
+        connect()
+
+        return () => {
+            alive = false
+            if (reconnectTimer !== undefined) clearTimeout(reconnectTimer)
+            ws?.close()
+        }
     }, [])
 
     const handleClose = async (symbol: string) => {
@@ -66,7 +166,7 @@ export default function PositionsPage() {
         setClosing(symbol)
         try {
             await api.closePosition(symbol)
-            await fetchData()
+            await fetchAll()
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : "Close failed"
             alert(`Close failed: ${message}`)
@@ -129,7 +229,19 @@ export default function PositionsPage() {
                             <table className="w-full">
                                 <thead>
                                     <tr className="border-b border-zinc-100 dark:border-zinc-800">
-                                        {["Symbol", "Side", "Qty", "Entry", "Leverage", "Liq. Price", "Margin", "Margin %", "Unrealized PnL", "Action"].map(
+                                        {[
+                                            "Symbol",
+                                            "Side",
+                                            "Qty",
+                                            "Entry",
+                                            "Leverage",
+                                            "Liq. Price",
+                                            "Margin",
+                                            "Margin %",
+                                            "当前价",
+                                            "Unrealized PnL",
+                                            "Action",
+                                        ].map(
                                             (h) => (
                                                 <th
                                                     key={h}
@@ -195,6 +307,9 @@ export default function PositionsPage() {
                                                 >
                                                     {p.margin_ratio > 0 ? `${p.margin_ratio.toFixed(1)}%` : "—"}
                                                 </span>
+                                            </td>
+                                            <td className="px-4 py-3 text-xs text-cyan-600 dark:text-cyan-400 font-mono tabular-nums">
+                                                {formatMarkPrice(p.mark_price ?? 0)}
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span

@@ -79,6 +79,7 @@ class PositionItem(BaseModel):
     symbol: str
     side: str
     entry_price: float
+    mark_price: float = 0
     quantity: float
     unrealized_pnl: float
     leverage: int = 0
@@ -296,6 +297,48 @@ def _finalize_trade(op: dict) -> dict:
 
 
 
+async def _fetch_open_position_items(trader) -> list[PositionItem]:
+    """Open positions from Binance (same shape as GET /api/positions)."""
+    all_pos, acct = await asyncio.gather(
+        trader.client.get_position_risk(),
+        trader.client.get_account_info(),
+    )
+    maint_map: dict[str, float] = {}
+    for ap in acct.get("positions", []):
+        sym = ap.get("symbol", "")
+        mm = float(ap.get("maintMargin", "0"))
+        if mm > 0:
+            maint_map[sym] = mm
+
+    items: list[PositionItem] = []
+    for p in all_pos:
+        amt = float(p.position_amt)
+        if amt == 0:
+            continue
+        liq = float(p.liquidation_price)
+        margin = float(p.isolated_margin)
+        upnl = float(p.unrealized_profit)
+        maint_margin = maint_map.get(p.symbol, 0)
+        margin_balance = margin
+        if margin_balance > 0 and maint_margin > 0:
+            margin_ratio = round(maint_margin / margin_balance * 100, 2)
+        else:
+            margin_ratio = 0
+        items.append(PositionItem(
+            symbol=p.symbol,
+            side="LONG" if amt > 0 else "SHORT",
+            entry_price=float(p.entry_price),
+            mark_price=float(p.mark_price),
+            quantity=abs(amt),
+            unrealized_pnl=upnl,
+            leverage=int(p.leverage),
+            liquidation_price=liq,
+            margin=margin,
+            margin_ratio=margin_ratio,
+        ))
+    return items
+
+
 # ── App factory ──────────────────────────────────────────────────────
 
 def create_app(trader) -> FastAPI:
@@ -384,48 +427,8 @@ def create_app(trader) -> FastAPI:
         if cached is not None:
             return cached
         try:
-            # Concurrent fetch — cuts latency in half
-            all_pos, acct = await asyncio.gather(
-                trader.client.get_position_risk(),
-                trader.client.get_account_info(),
-            )
-            maint_map: dict[str, float] = {}
-            for ap in acct.get("positions", []):
-                sym = ap.get("symbol", "")
-                mm = float(ap.get("maintMargin", "0"))
-                if mm > 0:
-                    maint_map[sym] = mm
-
-            items = []
-            for p in all_pos:
-                amt = float(p.position_amt)
-                if amt == 0:
-                    continue
-                liq = float(p.liquidation_price)
-                margin = float(p.isolated_margin)
-                upnl = float(p.unrealized_profit)
-
-                # Binance margin ratio = maintMargin / marginBalance * 100%
-                # marginBalance = isolatedMargin (which includes wallet + upnl for isolated)
-                maint_margin = maint_map.get(p.symbol, 0)
-                margin_balance = margin  # isolatedMargin already includes unrealized PnL
-                if margin_balance > 0 and maint_margin > 0:
-                    margin_ratio = round(maint_margin / margin_balance * 100, 2)
-                else:
-                    margin_ratio = 0
-
-                items.append(PositionItem(
-                    symbol=p.symbol,
-                    side="LONG" if amt > 0 else "SHORT",
-                    entry_price=float(p.entry_price),
-                    quantity=abs(amt),
-                    unrealized_pnl=upnl,
-                    leverage=int(p.leverage),
-                    liquidation_price=liq,
-                    margin=margin,
-                    margin_ratio=margin_ratio,
-                ))
-            _cache.set("positions", items, ttl=3)
+            items = await _fetch_open_position_items(trader)
+            _cache.set("positions", items, ttl=1)
             return items
         except Exception as e:
             raise HTTPException(500, detail=str(e))
@@ -970,19 +973,8 @@ def create_app(trader) -> FastAPI:
                 # Build and send status update only when state has changed
                 try:
                     bal = await trader.client.get_account_balance()
-                    all_pos = await trader.client.get_position_risk()
-                    open_pos = [p for p in all_pos if float(p.position_amt) != 0]
-
-                    pos_data = [
-                        {
-                            "symbol": p.symbol,
-                            "side": "LONG" if float(p.position_amt) > 0 else "SHORT",
-                            "unrealized_pnl": float(p.unrealized_profit),
-                            "entry_price": float(p.entry_price),
-                            "quantity": abs(float(p.position_amt)),
-                        }
-                        for p in open_pos
-                    ]
+                    pos_items = await _fetch_open_position_items(trader)
+                    pos_data = [p.model_dump() for p in pos_items]
 
                     # Compute a lightweight hash: balance rounded to 2dp + position symbols+PnL
                     import hashlib, json as _json
@@ -1009,7 +1001,7 @@ def create_app(trader) -> FastAPI:
                 except Exception as e:
                     logger.debug("WS status error: %s", e)
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
 
         except WebSocketDisconnect:
             pass

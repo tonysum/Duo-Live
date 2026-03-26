@@ -26,6 +26,8 @@ export interface Position {
   symbol: string;
   side: string;
   entry_price: number;
+  /** Binance mark price (实时标记价) */
+  mark_price: number;
   quantity: number;
   unrealized_pnl: number;
   leverage: number;
@@ -185,6 +187,16 @@ export const api = {
       `/api/logs?lines=${lines}&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`
     ),
   wsUrl: `${API_BASE.replace("http", "ws")}/ws/live`,
+  /** `/ws/live` — optional `VITE_WS_TOKEN` must match server `WS_TOKEN` */
+  wsLiveUrl: () => {
+    const base = (
+      import.meta.env.VITE_API_URL ||
+      `http://${window.location.hostname}:8899`
+    ).replace("http", "ws");
+    const token = import.meta.env.VITE_WS_TOKEN;
+    const q = token ? `?token=${encodeURIComponent(String(token))}` : "";
+    return `${base}/ws/live${q}`;
+  },
   wsLogsUrl: () => {
     const base = (
       import.meta.env.VITE_API_URL ||

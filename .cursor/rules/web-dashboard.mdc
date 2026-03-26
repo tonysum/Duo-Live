@@ -1,0 +1,12 @@
+---
+description: web 看板（Vite/React/TS）约定
+globs: web/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# `web/` Dashboard
+
+- API 基址：`VITE_API_URL` 或回退到 `hostname:8899`；WS 与 `wsLiveUrl` / `wsLogsUrl` 一致，生产若启用 `WS_TOKEN` 需配置 `VITE_WS_TOKEN`。
+- **类型**：与后端响应共用的形状集中在 `web/src/lib/api.ts`；新增字段时同时更新类型与调用处。
+- **实时数据**：持仓优先 `/ws/live`；未包含的资源用 REST 轮询，并考虑断线兜底（见 `PositionsPage` 模式）。
+- **质量**：提交前 `npm run build`；遵循现有组件与样式模式，避免无关大重构。
