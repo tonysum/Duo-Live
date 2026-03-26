@@ -1,7 +1,7 @@
 {
   "leverage": 3,
   "max_positions": 8,
-  "max_entries_per_day": 2,
+  "max_entries_per_day": 8,
   "live_fixed_margin_usdt": 5.0,
   "daily_loss_limit_usdt": 50.0,
   "margin_mode": "fixed",
