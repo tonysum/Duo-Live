@@ -51,6 +51,7 @@ class LiveTrader:
         self._running = False
         self.auto_trade_enabled = False  # 自动交易开关 (默认关闭)
         self._main_task: Optional[asyncio.Task] = None
+        self._process_started_at: datetime | None = None  # 本进程进入 trader 主循环的时间 (UTC)
 
         # Pluggable strategy (required — set by __main__.py)
         if strategy is None:
@@ -127,6 +128,7 @@ class LiveTrader:
         async with self.client:
             try:
                 self._main_task = asyncio.current_task()
+                self._process_started_at = datetime.now(timezone.utc)
 
                 # Recover existing positions from exchange
                 await self.live_monitor.recover_positions()

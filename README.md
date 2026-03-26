@@ -236,8 +236,8 @@ ALERT_EMAIL=
 
 ## 部署
 
-- **PM2**：`ecosystem.config.js`（后端 `python -m live run`，前端见 `web/start.sh`）。  
-- **一键脚本**：`./deploy.sh`（`git pull`、依赖、前端构建、PM2 重启）。  
+- **PM2**：`ecosystem.config.js`（后端 `python -m live run`，前端见 `web/start.sh`）。进程「距上次重启」时长还可用 `pm2 list` / `pm2 show duo-live-backend` 查看。  
+- **一键脚本**：`./deploy.sh`（`git pull`、依赖、前端构建、PM2 重启）；脚本结束时会写入 **`data/deployed_at.txt`**（UTC 时间），供 `/api/status` 与看板显示「自上次部署起」累计时长（该文件已加入 `.gitignore`，按机保留）。  
 - **反向代理**：[docs/nginx-deploy.md](docs/nginx-deploy.md)。  
 - 生产需开放 API **8899**、前端 **3000**（或由 Nginx 统一 80/443）。
 

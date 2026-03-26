@@ -34,6 +34,11 @@ echo ""
 # 4. 重启所有服务
 echo "♻️  Step 4: 重启 PM2 服务..."
 pm2 restart ecosystem.config.js
+
+# 记录本次部署完成时间 (UTC)，供 /api/status 显示「自部署起」运行时长
+mkdir -p data
+date -u +"%Y-%m-%dT%H:%M:%SZ" > data/deployed_at.txt
+echo "🕐 已写入 data/deployed_at.txt (部署完成时间 UTC)"
 echo ""
 
 # 5. 确认状态

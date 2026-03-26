@@ -111,6 +111,24 @@ export default function Content() {
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
             Real-time trading dashboard
           </p>
+          {status && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 font-mono space-x-3">
+              {status.uptime_since_deploy_label && status.deployed_at ? (
+                <span title={status.deployed_at}>
+                  自上次部署: {status.uptime_since_deploy_label}
+                </span>
+              ) : (
+                <span title="在云服务器执行过 deploy.sh 后会写入 data/deployed_at.txt">
+                  自上次部署: 未记录
+                </span>
+              )}
+              {status.uptime_since_restart_label ? (
+                <span title={status.process_started_at ?? ""}>
+                  本进程: {status.uptime_since_restart_label}
+                </span>
+              ) : null}
+            </p>
+          )}
         </div>
       </div>
 

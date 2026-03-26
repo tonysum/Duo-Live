@@ -12,6 +12,14 @@ export interface Status {
   open_positions: number;
   auto_trade_enabled: boolean;
   timestamp: string;
+  /** ISO UTC; set when deploy.sh wrote data/deployed_at.txt */
+  deployed_at?: string | null;
+  uptime_since_deploy_sec?: number | null;
+  uptime_since_deploy_label?: string;
+  /** When this backend process entered the main trading loop */
+  process_started_at?: string | null;
+  uptime_since_restart_sec?: number | null;
+  uptime_since_restart_label?: string;
 }
 
 export interface Position {

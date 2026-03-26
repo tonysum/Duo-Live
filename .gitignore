@@ -8,6 +8,7 @@ tests/
 
 # Data
 data/*.db
+data/deployed_at.txt
 *.pdf
 /logs/
 

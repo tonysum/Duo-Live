@@ -66,6 +66,13 @@ class StatusResponse(BaseModel):
     open_positions: int
     auto_trade_enabled: bool
     timestamp: str
+    # Uptime (see runtime_info / data/deployed_at.txt + deploy.sh)
+    deployed_at: Optional[str] = None  # ISO UTC when deploy.sh last wrote deployed_at.txt
+    uptime_since_deploy_sec: Optional[int] = None
+    uptime_since_deploy_label: str = ""
+    process_started_at: Optional[str] = None  # ISO UTC when this process entered trader main loop
+    uptime_since_restart_sec: Optional[int] = None
+    uptime_since_restart_label: str = ""
 
 
 class PositionItem(BaseModel):
@@ -337,6 +344,18 @@ def create_app(trader) -> FastAPI:
             )
             open_count = sum(1 for p in all_pos if float(p.position_amt) != 0)
 
+            from .runtime_info import human_uptime_cn, read_deployed_at
+
+            dep = read_deployed_at()
+            dep_iso = dep.isoformat().replace("+00:00", "Z") if dep else None
+            dep_sec = int((now - dep).total_seconds()) if dep else None
+            dep_lbl = human_uptime_cn(dep_sec) if dep_sec is not None else ""
+
+            ps = getattr(trader, "_process_started_at", None)
+            ps_iso = ps.isoformat().replace("+00:00", "Z") if ps else None
+            ps_sec = int((now - ps).total_seconds()) if ps else None
+            ps_lbl = human_uptime_cn(ps_sec) if ps_sec is not None else ""
+
             resp = StatusResponse(
                 mode="live",
                 total_balance=bal["total_balance"],
@@ -346,6 +365,12 @@ def create_app(trader) -> FastAPI:
                 open_positions=open_count,
                 auto_trade_enabled=trader.auto_trade_enabled,
                 timestamp=now.isoformat(),
+                deployed_at=dep_iso,
+                uptime_since_deploy_sec=dep_sec,
+                uptime_since_deploy_label=dep_lbl,
+                process_started_at=ps_iso,
+                uptime_since_restart_sec=ps_sec,
+                uptime_since_restart_label=ps_lbl,
             )
             _cache.set("status", resp, ttl=3)
             return resp
