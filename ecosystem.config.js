@@ -4,7 +4,7 @@ module.exports = {
         {
             name: "duo-live-backend",
             script: ".venv/bin/python",
-            args: "-m live run",
+            args: "-m live run --auto-trade",
             cwd: "./",
             env: {
                 // 从 .env 文件加载，或直接写在这里
