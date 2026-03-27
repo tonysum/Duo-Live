@@ -339,6 +339,16 @@ async def _fetch_open_position_items(trader) -> list[PositionItem]:
     return items
 
 
+def _ws_live_send_dead(exc: BaseException) -> bool:
+    """True if WebSocket is closed — caller must stop send loop."""
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if isinstance(exc, RuntimeError):
+        low = str(exc).lower()
+        return "close message" in low and "send" in low
+    return False
+
+
 # ── App factory ──────────────────────────────────────────────────────
 
 def create_app(trader) -> FastAPI:
@@ -1002,6 +1012,8 @@ def create_app(trader) -> FastAPI:
                         last_hash = new_hash
 
                 except Exception as e:
+                    if _ws_live_send_dead(e):
+                        break
                     logger.debug("WS status error: %s", e)
 
                 await asyncio.sleep(2)
