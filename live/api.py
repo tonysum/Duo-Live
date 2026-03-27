@@ -975,13 +975,16 @@ def create_app(trader) -> FastAPI:
                     bal = await trader.client.get_account_balance()
                     pos_items = await _fetch_open_position_items(trader)
                     pos_data = [p.model_dump() for p in pos_items]
+                    # get_account_balance() uses Decimal; JSON / hash must use float
+                    total_bal_f = float(bal["total_balance"])
+                    upnl_f = float(bal["unrealized_pnl"])
 
                     # Compute a lightweight hash: balance rounded to 2dp + position symbols+PnL
                     import hashlib, json as _json
                     state_key = _json.dumps(
                         {
-                            "bal": round(bal["total_balance"], 2),
-                            "upnl": round(bal["unrealized_pnl"], 4),
+                            "bal": round(total_bal_f, 2),
+                            "upnl": round(upnl_f, 4),
                             "pos": [{k: v for k, v in p.items()} for p in pos_data],
                         },
                         sort_keys=True,
@@ -991,8 +994,8 @@ def create_app(trader) -> FastAPI:
                     if new_hash != last_hash:
                         data = {
                             "type": "status",
-                            "total_balance": bal["total_balance"],
-                            "unrealized_pnl": bal["unrealized_pnl"],
+                            "total_balance": total_bal_f,
+                            "unrealized_pnl": upnl_f,
                             "positions": pos_data,
                         }
                         await ws.send_json(data)

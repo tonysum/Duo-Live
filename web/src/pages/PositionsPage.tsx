@@ -238,7 +238,7 @@ export default function PositionsPage() {
                                             "Liq. Price",
                                             "Margin",
                                             "Margin %",
-                                            "当前价",
+                                            "Mark Price",
                                             "Unrealized PnL",
                                             "Action",
                                         ].map(
