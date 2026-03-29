@@ -29,6 +29,13 @@ interface Props {
   tpLineTitle?: string
   slLineTitle?: string
   exitLineTitle?: string
+  /** K 线横向间距（越大单根蜡烛越粗），默认 9 */
+  barSpacing?: number
+  /**
+   * 传入时：全量 `klines` 进序列，但首次/数据替换后只把「最近 N 根」放进视口（柱更粗）；
+   * 左右拖拽可浏览同批次已加载的更早 K 线。不传则沿用首次 fitContent 全览。
+   */
+  initialVisibleBars?: number
   onRealtimeUpdate?: (updater: (kline: Kline) => void) => void
 }
 
@@ -43,6 +50,8 @@ export default function TradeChart({
   tpLineTitle = "TP",
   slLineTitle = "SL",
   exitLineTitle = "Exit",
+  barSpacing = 9,
+  initialVisibleBars,
   onRealtimeUpdate,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -50,6 +59,7 @@ export default function TradeChart({
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null)
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null)
   const initialFitDone = useRef(false)
+  const klinesLayoutKeyRef = useRef("")
 
   // Create chart once
   useEffect(() => {
@@ -77,7 +87,7 @@ export default function TradeChart({
       timeScale: {
         borderColor: gridColor,
         timeVisible: true,
-        barSpacing: 9,
+        barSpacing,
       },
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight || 500,
@@ -105,6 +115,7 @@ export default function TradeChart({
     candleRef.current = candleSeries
     volumeRef.current = volumeSeries
     initialFitDone.current = false
+    klinesLayoutKeyRef.current = ""
 
     const handleResize = () => {
       if (containerRef.current) {
@@ -128,7 +139,11 @@ export default function TradeChart({
           horzLines: { color: newGridColor },
         },
         rightPriceScale: { borderColor: newGridColor },
-        timeScale: { borderColor: newGridColor },
+        timeScale: {
+          borderColor: newGridColor,
+          timeVisible: true,
+          barSpacing,
+        },
       })
     })
     observer.observe(document.documentElement, {
@@ -144,7 +159,7 @@ export default function TradeChart({
       candleRef.current = null
       volumeRef.current = null
     }
-  }, [])
+  }, [barSpacing])
 
   // Update data
   useEffect(() => {
@@ -240,7 +255,24 @@ export default function TradeChart({
       })
     }
 
-    if (!initialFitDone.current) {
+    const layoutKey =
+      klines.length > 0
+        ? `${klines.length}:${klines[0]!.time}:${klines[klines.length - 1]!.time}`
+        : ""
+    const layoutChanged =
+      layoutKey !== klinesLayoutKeyRef.current && layoutKey.length > 0
+    if (layoutChanged) {
+      klinesLayoutKeyRef.current = layoutKey
+    }
+
+    if (initialVisibleBars && klines.length > 0 && layoutChanged) {
+      const n = Math.min(initialVisibleBars, klines.length)
+      const from = klines.length - n
+      const to = klines.length - 1
+      requestAnimationFrame(() => {
+        chart.timeScale().setVisibleLogicalRange({ from, to })
+      })
+    } else if (!initialVisibleBars && !initialFitDone.current) {
       chart.timeScale().fitContent()
       initialFitDone.current = true
     }
@@ -255,6 +287,7 @@ export default function TradeChart({
     tpLineTitle,
     slLineTitle,
     exitLineTitle,
+    initialVisibleBars,
   ])
 
   // Expose real-time update function

@@ -380,6 +380,18 @@ def _enrich_positions_from_monitor_store(trader, items: list[PositionItem]) -> l
                     tp = float(st.get("current_tp_pct") or 0)
                 if not strength and st.get("strength"):
                     strength = str(st["strength"])
+        if entry_time is None and store is not None:
+            try:
+                lt_ts = store.get_latest_entry_timestamp_iso(it.symbol, it.side)
+            except Exception:
+                lt_ts = None
+            if lt_ts:
+                entry_time = lt_ts
+        if entry_time is None and tracked is not None and getattr(tracked, "created_at", None):
+            ca = tracked.created_at
+            if ca.tzinfo is None:
+                ca = ca.replace(tzinfo=timezone.utc)
+            entry_time = ca.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         out.append(
             it.model_copy(
                 update={

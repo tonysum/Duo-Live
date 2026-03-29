@@ -19,6 +19,11 @@ const TradeChart = lazy(() => import("@/components/kokonutui/trade-chart"))
 
 const CHART_INTERVALS = ["5m", "15m", "1h", "4h", "1d"]
 
+/** 单次拉取 K 线根数；全量进图，可横向拖拽查看 */
+const POSITION_KLINE_LIMIT = 200
+/** 初次加载/换周期时视口内大约显示的根数（柱更粗）；拖动画布可看更早已加载数据 */
+const CHART_VISIBLE_BARS = 64
+
 function formatMarkPrice(p: number) {
     if (!p || !Number.isFinite(p)) return "—"
     if (p >= 1000) return p.toFixed(2)
@@ -51,9 +56,56 @@ function orderTypeLabel(type: string) {
     return map[type] || type
 }
 
+/** 后端 ISO 若无时区后缀，按 UTC 解析（避免被当成本地时区） */
+function parseUtcEntryMs(iso: string): number {
+    let s = iso.trim()
+    if (!s) return NaN
+    if (!s.includes("T") && s.length >= 10) {
+        const rest = s.length > 10 ? s.slice(11).trim() : ""
+        s = `${s.slice(0, 10)}T${rest || "00:00:00"}`
+    }
+    if (!/[zZ]$/.test(s) && !/[+-]\d{2}:?\d{2}$/.test(s)) {
+        s = `${s}Z`
+    }
+    return new Date(s).getTime()
+}
+
 function fmtUtcCompact(iso: string | null | undefined) {
     if (!iso) return "—"
-    return `${iso.slice(0, 19).replace("T", " ")} UTC`
+    const ms = parseUtcEntryMs(iso)
+    if (!Number.isFinite(ms)) return `${iso.slice(0, 19).replace("T", " ")} UTC`
+    const d = new Date(ms)
+    const y = d.getUTCFullYear()
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0")
+    const da = String(d.getUTCDate()).padStart(2, "0")
+    const hh = String(d.getUTCHours()).padStart(2, "0")
+    const mi = String(d.getUTCMinutes()).padStart(2, "0")
+    const ss = String(d.getUTCSeconds()).padStart(2, "0")
+    return `${y}-${mo}-${da} ${hh}:${mi}:${ss} UTC`
+}
+
+/** K 线序列（时间升序）中，入场时刻所在蜡烛的 open time（秒） */
+function barOpenTimeForEntry(entrySec: number, klines: Kline[]): number {
+    if (!klines.length || !Number.isFinite(entrySec)) return 0
+    let best = klines[0].time
+    for (const k of klines) {
+        if (k.time <= entrySec) best = k.time
+        else break
+    }
+    return best
+}
+
+/** 图表标记上展示的 UTC 时间文案（紧凑，含秒便于与成交对齐） */
+function formatEntryTimeInMarkerLabel(iso: string): string {
+    const ms = parseUtcEntryMs(iso)
+    if (!Number.isFinite(ms)) return ""
+    const d = new Date(ms)
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0")
+    const da = String(d.getUTCDate()).padStart(2, "0")
+    const hh = String(d.getUTCHours()).padStart(2, "0")
+    const mi = String(d.getUTCMinutes()).padStart(2, "0")
+    const ss = String(d.getUTCSeconds()).padStart(2, "0")
+    return `${mo}-${da} ${hh}:${mi}:${ss} UTC`
 }
 
 /** 与 live_executor：`LONG` 止盈在上方；`SHORT` 止盈在下方 */
@@ -65,17 +117,22 @@ function tpSlFromPct(side: string, entry: number, tpPct: number, slPct: number) 
     return { tp, sl }
 }
 
-function algoTpSlTriggers(orders: OpenOrder[], symbol: string) {
+/** 条件单 + 普通止损/止盈挂单（币安部分类型在非 algo 列表里也能出现） */
+function tpSlFromOpenOrders(orders: OpenOrder[], symbol: string) {
     let tp = 0
     let sl = 0
     for (const o of orders) {
-        if (o.symbol !== symbol || !o.is_algo) continue
+        if (o.symbol !== symbol) continue
         const sp = o.stop_price
         if (!sp || sp <= 0 || !Number.isFinite(sp)) continue
         const t = (o.type || "").toUpperCase()
-        if (t.includes("TAKE_PROFIT")) tp = sp
-        else if (t.includes("TRAILING")) sl = sp
-        else if (t.includes("STOP")) sl = sp
+        if (t.includes("TAKE_PROFIT")) {
+            tp = sp
+        } else if (t.includes("TRAILING")) {
+            sl = sp
+        } else if (t.includes("STOP")) {
+            sl = sp
+        }
     }
     return { tp, sl }
 }
@@ -106,7 +163,7 @@ function pctFromTpSl(
 
 function positionChartDerived(p: Position, orders: OpenOrder[]) {
     const entry = p.entry_price
-    const { tp: algoTp, sl: algoSl } = algoTpSlTriggers(orders, p.symbol)
+    const { tp: algoTp, sl: algoSl } = tpSlFromOpenOrders(orders, p.symbol)
     const fromPct = tpSlFromPct(p.side, entry, p.tp_pct || 0, p.sl_pct || 0)
     const tpPrice = algoTp > 0 ? algoTp : (p.tp_pct || 0) > 0 ? fromPct.tp : 0
     const slPrice = algoSl > 0 ? algoSl : (p.sl_pct || 0) > 0 ? fromPct.sl : 0
@@ -116,6 +173,15 @@ function positionChartDerived(p: Position, orders: OpenOrder[]) {
     if (tpPct <= 0 && tpPrice > 0) tpPct = inferred.tpPct
     if (slPct <= 0 && slPrice > 0) slPct = inferred.slPct
     return { tpPrice, slPrice, tpPct, slPct }
+}
+
+/** 用于稳定 chart 派生：该合约任一触发类挂单变化时更新 */
+function ordersKeyForSymbol(orders: OpenOrder[], symbol: string): string {
+    return orders
+        .filter((o) => o.symbol === symbol)
+        .map((o) => `${o.is_algo ? 1 : 0}:${o.type}:${o.stop_price}:${o.id}`)
+        .sort()
+        .join(";")
 }
 
 export default function PositionsPage() {
@@ -138,24 +204,59 @@ export default function PositionsPage() {
         [positions, selectedSymbol]
     )
 
-    const chartModel = useMemo(() => {
-        if (!selectedPosition) return null
-        return positionChartDerived(selectedPosition, orders)
-    }, [selectedPosition, orders])
+    /** 仅随入场/止盈止损参数或条件单变化，避免每次 WS 推送都换新对象导致图表重绘 */
+    const chartModelKey = useMemo(() => {
+        if (!selectedSymbol) return ""
+        const p = positions.find((x) => x.symbol === selectedSymbol)
+        if (!p) return ""
+        const ok = ordersKeyForSymbol(orders, selectedSymbol)
+        const et = p.entry_time ?? ""
+        return `${selectedSymbol}|${p.side}|${p.entry_price}|${p.tp_pct}|${p.sl_pct}|${et}|${ok}`
+    }, [positions, selectedSymbol, orders])
 
-    const chartMarkers = useMemo(() => {
-        if (!selectedPosition?.entry_time) return []
-        const t = Math.floor(new Date(selectedPosition.entry_time).getTime() / 1000)
-        if (!Number.isFinite(t) || Number.isNaN(t)) return []
+    type EntryMarker = {
+        type: "entry"
+        time: number
+        price: number
+        label: string
+    }
+
+    const chartBundle = useMemo(() => {
+        if (!chartModelKey || !selectedSymbol) {
+            return { model: null as ReturnType<typeof positionChartDerived> | null }
+        }
+        const p = positions.find((x) => x.symbol === selectedSymbol)
+        if (!p) {
+            return { model: null }
+        }
+        const model = positionChartDerived(p, orders)
+        return { model }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 故意只在 chartModelKey 变化时重算，与 WS 数组引用脱钩
+    }, [chartModelKey])
+
+    const chartModel = chartBundle.model
+
+    /** 时间与已加载 K 线对齐；标签含 UTC 入场时间 + 价格 */
+    const chartEntryMarkers = useMemo((): EntryMarker[] => {
+        if (!selectedSymbol || klines.length === 0) return []
+        const p = positions.find((x) => x.symbol === selectedSymbol)
+        if (!p?.entry_time) return []
+        const ms = parseUtcEntryMs(p.entry_time)
+        if (!Number.isFinite(ms)) return []
+        const entrySec = Math.floor(ms / 1000)
+        const barTime = barOpenTimeForEntry(entrySec, klines)
+        if (!barTime) return []
+        const timePart = formatEntryTimeInMarkerLabel(p.entry_time)
+        const pricePart = formatMarkPrice(p.entry_price)
         return [
             {
-                type: "entry" as const,
-                time: t,
-                price: selectedPosition.entry_price,
-                label: `入场 ${formatMarkPrice(selectedPosition.entry_price)}`,
+                type: "entry",
+                time: barTime,
+                price: p.entry_price,
+                label: `入场 ${timePart} @ ${pricePart}`,
             },
         ]
-    }, [selectedPosition])
+    }, [selectedSymbol, positions, klines])
 
     useEffect(() => {
         if (!selectedSymbol) return
@@ -165,19 +266,29 @@ export default function PositionsPage() {
     }, [positions, selectedSymbol])
 
     useEffect(() => {
-        if (!selectedPosition) {
+        if (!selectedSymbol) {
             setKlines([])
             return
         }
+        let cancelled = false
         setChartLoading(true)
-        api.getKlines(selectedPosition.symbol, chartInterval, 500)
-            .then(setKlines)
-            .catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : "Klines failed"
-                setError(message)
+        api.getKlines(selectedSymbol, chartInterval, POSITION_KLINE_LIMIT)
+            .then((data) => {
+                if (!cancelled) setKlines(data)
             })
-            .finally(() => setChartLoading(false))
-    }, [selectedPosition, chartInterval])
+            .catch((err: unknown) => {
+                if (!cancelled) {
+                    const message = err instanceof Error ? err.message : "Klines failed"
+                    setError(message)
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setChartLoading(false)
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [selectedSymbol, chartInterval])
 
     const fetchOrders = useCallback(async () => {
         try {
@@ -602,7 +713,7 @@ export default function PositionsPage() {
                                                 <div className="h-[min(420px,50vh)] w-full min-h-[280px]">
                                                     <TradeChart
                                                         klines={klines}
-                                                        markers={chartMarkers}
+                                                        markers={chartEntryMarkers}
                                                         entryPrice={selectedPosition.entry_price}
                                                         tpPrice={
                                                             chartModel.tpPrice > 0
@@ -617,6 +728,8 @@ export default function PositionsPage() {
                                                         entryLineTitle={entryLineTitle}
                                                         tpLineTitle={tpLineTitle}
                                                         slLineTitle={slLineTitle}
+                                                        barSpacing={22}
+                                                        initialVisibleBars={CHART_VISIBLE_BARS}
                                                     />
                                                 </div>
                                             </Suspense>

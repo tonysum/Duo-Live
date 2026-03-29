@@ -214,6 +214,26 @@ class TradeStore:
             )
             self._conn.commit()
 
+    def get_latest_entry_timestamp_iso(self, symbol: str, side: str) -> Optional[str]:
+        """Most recent `live_trades` row with event=entry for symbol+side.
+
+        Used to backfill chart entry time when the exchange monitor has no fill time.
+        """
+        sym = symbol.upper()
+        sd = side.upper()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT timestamp FROM live_trades
+                WHERE symbol = ? AND event = 'entry' AND UPPER(side) = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (sym, sd),
+            ).fetchone()
+        if row is None or not row["timestamp"]:
+            return None
+        return str(row["timestamp"]).strip() or None
+
     def get_live_trades(
         self, limit: int = 100, since_date: Optional[str] = None
     ) -> list[LiveTrade]:
