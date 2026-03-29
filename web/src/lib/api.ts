@@ -32,7 +32,10 @@ export interface Position {
   unrealized_pnl: number;
   leverage: number;
   tp_pct: number;
+  sl_pct: number;
   strength: string;
+  /** ISO UTC，来自实盘 monitor 的入场成交时间（无追踪时为空） */
+  entry_time?: string | null;
   liquidation_price: number;
   margin: number;
   margin_ratio: number;

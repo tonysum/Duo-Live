@@ -24,6 +24,11 @@ interface Props {
   slPrice?: number
   entryPrice?: number
   exitPrice?: number
+  /** Override axis label next to price line (default: Entry) */
+  entryLineTitle?: string
+  tpLineTitle?: string
+  slLineTitle?: string
+  exitLineTitle?: string
   onRealtimeUpdate?: (updater: (kline: Kline) => void) => void
 }
 
@@ -34,6 +39,10 @@ export default function TradeChart({
   slPrice,
   entryPrice,
   exitPrice,
+  entryLineTitle = "Entry",
+  tpLineTitle = "TP",
+  slLineTitle = "SL",
+  exitLineTitle = "Exit",
   onRealtimeUpdate,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -197,7 +206,7 @@ export default function TradeChart({
         lineWidth: 1,
         lineStyle: 2,
         axisLabelVisible: true,
-        title: "Entry",
+        title: entryLineTitle,
       })
     }
     if (exitPrice) {
@@ -207,7 +216,7 @@ export default function TradeChart({
         lineWidth: 1,
         lineStyle: 2,
         axisLabelVisible: true,
-        title: "Exit",
+        title: exitLineTitle,
       })
     }
     if (tpPrice) {
@@ -217,7 +226,7 @@ export default function TradeChart({
         lineWidth: 1,
         lineStyle: 3,
         axisLabelVisible: true,
-        title: "TP",
+        title: tpLineTitle,
       })
     }
     if (slPrice) {
@@ -227,7 +236,7 @@ export default function TradeChart({
         lineWidth: 1,
         lineStyle: 3,
         axisLabelVisible: true,
-        title: "SL",
+        title: slLineTitle,
       })
     }
 
@@ -235,7 +244,18 @@ export default function TradeChart({
       chart.timeScale().fitContent()
       initialFitDone.current = true
     }
-  }, [klines, markers, tpPrice, slPrice, entryPrice, exitPrice])
+  }, [
+    klines,
+    markers,
+    tpPrice,
+    slPrice,
+    entryPrice,
+    exitPrice,
+    entryLineTitle,
+    tpLineTitle,
+    slLineTitle,
+    exitLineTitle,
+  ])
 
   // Expose real-time update function
   useEffect(() => {

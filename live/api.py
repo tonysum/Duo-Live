@@ -89,7 +89,10 @@ class PositionItem(BaseModel):
     unrealized_pnl: float
     leverage: int = 0
     tp_pct: float = 0
+    sl_pct: float = 0
     strength: str = ""
+    #: ISO UTC from LivePositionMonitor when tracked (entry fill time)
+    entry_time: Optional[str] = None
     liquidation_price: float = 0
     margin: float = 0
     margin_ratio: float = 0
@@ -342,6 +345,54 @@ def _finalize_trade(op: dict) -> dict:
     }
 
 
+def _enrich_positions_from_monitor_store(trader, items: list[PositionItem]) -> list[PositionItem]:
+    """Merge TP/SL %, strength, entry_time from monitor + SQLite `position_state`."""
+    out: list[PositionItem] = []
+    store = getattr(trader, "store", None)
+    monitor = getattr(trader, "live_monitor", None)
+    for it in items:
+        tp = float(it.tp_pct or 0)
+        sl = float(it.sl_pct or 0)
+        strength = it.strength or ""
+        entry_time = it.entry_time
+        tracked = None
+        if monitor and getattr(monitor, "_positions", None):
+            cand = monitor._positions.get(it.symbol)  # noqa: SLF001
+            if cand is not None and cand.side == it.side:
+                tracked = cand
+        if tracked is not None:
+            tp = float(tracked.current_tp_pct)
+            sl = float(tracked.current_sl_pct)
+            if tracked.strength:
+                strength = str(tracked.strength)
+            if tracked.entry_fill_time is not None:
+                eft = tracked.entry_fill_time
+                if eft.tzinfo is None:
+                    eft = eft.replace(tzinfo=timezone.utc)
+                entry_time = eft.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        elif store is not None:
+            try:
+                st = store.get_position_state(it.symbol)
+            except Exception:
+                st = None
+            if st:
+                if tp <= 0:
+                    tp = float(st.get("current_tp_pct") or 0)
+                if not strength and st.get("strength"):
+                    strength = str(st["strength"])
+        out.append(
+            it.model_copy(
+                update={
+                    "tp_pct": round(tp, 4) if tp else 0.0,
+                    "sl_pct": round(sl, 4) if sl else 0.0,
+                    "strength": strength,
+                    "entry_time": entry_time,
+                }
+            )
+        )
+    return out
+
+
 def _trade_return_pct(side: str, entry_price: float, exit_price: float) -> float:
     """Price return vs entry (percent), same sign convention as spot PnL direction."""
     if entry_price <= 0 or exit_price <= 0:
@@ -391,7 +442,7 @@ async def _fetch_open_position_items(trader) -> list[PositionItem]:
             margin=margin,
             margin_ratio=margin_ratio,
         ))
-    return items
+    return _enrich_positions_from_monitor_store(trader, items)
 
 
 def _rolling_params_response(rc: object | None) -> RollingParamsResponse:

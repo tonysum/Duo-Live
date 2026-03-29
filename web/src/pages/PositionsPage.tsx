@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from "react"
-import { api, Position, OpenOrder } from "@/lib/api"
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from "react"
+import { api, Position, OpenOrder, Kline } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
 import {
@@ -12,7 +12,12 @@ import {
     ClipboardList,
     ChevronRight,
     ChevronDown,
+    LineChart,
 } from "lucide-react"
+
+const TradeChart = lazy(() => import("@/components/kokonutui/trade-chart"))
+
+const CHART_INTERVALS = ["5m", "15m", "1h", "4h", "1d"]
 
 function formatMarkPrice(p: number) {
     if (!p || !Number.isFinite(p)) return "—"
@@ -46,6 +51,73 @@ function orderTypeLabel(type: string) {
     return map[type] || type
 }
 
+function fmtUtcCompact(iso: string | null | undefined) {
+    if (!iso) return "—"
+    return `${iso.slice(0, 19).replace("T", " ")} UTC`
+}
+
+/** 与 live_executor：`LONG` 止盈在上方；`SHORT` 止盈在下方 */
+function tpSlFromPct(side: string, entry: number, tpPct: number, slPct: number) {
+    if (!Number.isFinite(entry) || entry <= 0) return { tp: 0, sl: 0 }
+    const L = side === "LONG"
+    const tp = L ? entry * (1 + tpPct / 100) : entry * (1 - tpPct / 100)
+    const sl = L ? entry * (1 - slPct / 100) : entry * (1 + slPct / 100)
+    return { tp, sl }
+}
+
+function algoTpSlTriggers(orders: OpenOrder[], symbol: string) {
+    let tp = 0
+    let sl = 0
+    for (const o of orders) {
+        if (o.symbol !== symbol || !o.is_algo) continue
+        const sp = o.stop_price
+        if (!sp || sp <= 0 || !Number.isFinite(sp)) continue
+        const t = (o.type || "").toUpperCase()
+        if (t.includes("TAKE_PROFIT")) tp = sp
+        else if (t.includes("TRAILING")) sl = sp
+        else if (t.includes("STOP")) sl = sp
+    }
+    return { tp, sl }
+}
+
+/** 由触发价反推价格收益率 %（与后端 TP/SL 距离定义一致） */
+function pctFromTpSl(
+    entry: number,
+    side: string,
+    tpPrice: number,
+    slPrice: number
+): { tpPct: number; slPct: number } {
+    if (!Number.isFinite(entry) || entry <= 0) return { tpPct: 0, slPct: 0 }
+    const L = side === "LONG"
+    let tpPctout = 0
+    let slPctout = 0
+    if (tpPrice > 0) {
+        tpPctout = L
+            ? ((tpPrice - entry) / entry) * 100
+            : ((entry - tpPrice) / entry) * 100
+    }
+    if (slPrice > 0) {
+        slPctout = L
+            ? ((entry - slPrice) / entry) * 100
+            : ((slPrice - entry) / entry) * 100
+    }
+    return { tpPct: Math.abs(tpPctout), slPct: Math.abs(slPctout) }
+}
+
+function positionChartDerived(p: Position, orders: OpenOrder[]) {
+    const entry = p.entry_price
+    const { tp: algoTp, sl: algoSl } = algoTpSlTriggers(orders, p.symbol)
+    const fromPct = tpSlFromPct(p.side, entry, p.tp_pct || 0, p.sl_pct || 0)
+    const tpPrice = algoTp > 0 ? algoTp : (p.tp_pct || 0) > 0 ? fromPct.tp : 0
+    const slPrice = algoSl > 0 ? algoSl : (p.sl_pct || 0) > 0 ? fromPct.sl : 0
+    let tpPct = (p.tp_pct || 0) > 0 ? p.tp_pct! : 0
+    let slPct = (p.sl_pct || 0) > 0 ? p.sl_pct! : 0
+    const inferred = pctFromTpSl(entry, p.side, tpPrice, slPrice)
+    if (tpPct <= 0 && tpPrice > 0) tpPct = inferred.tpPct
+    if (slPct <= 0 && slPrice > 0) slPct = inferred.slPct
+    return { tpPrice, slPrice, tpPct, slPct }
+}
+
 export default function PositionsPage() {
     const [positions, setPositions] = useState<Position[]>([])
     const [orders, setOrders] = useState<OpenOrder[]>([])
@@ -56,6 +128,56 @@ export default function PositionsPage() {
     /** Open Orders 区块默认折叠 */
     const [ordersExpanded, setOrdersExpanded] = useState(false)
     const wsAttemptRef = useRef(0)
+    const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+    const [klines, setKlines] = useState<Kline[]>([])
+    const [chartInterval, setChartInterval] = useState("1h")
+    const [chartLoading, setChartLoading] = useState(false)
+
+    const selectedPosition = useMemo(
+        () => positions.find((p) => p.symbol === selectedSymbol) ?? null,
+        [positions, selectedSymbol]
+    )
+
+    const chartModel = useMemo(() => {
+        if (!selectedPosition) return null
+        return positionChartDerived(selectedPosition, orders)
+    }, [selectedPosition, orders])
+
+    const chartMarkers = useMemo(() => {
+        if (!selectedPosition?.entry_time) return []
+        const t = Math.floor(new Date(selectedPosition.entry_time).getTime() / 1000)
+        if (!Number.isFinite(t) || Number.isNaN(t)) return []
+        return [
+            {
+                type: "entry" as const,
+                time: t,
+                price: selectedPosition.entry_price,
+                label: `入场 ${formatMarkPrice(selectedPosition.entry_price)}`,
+            },
+        ]
+    }, [selectedPosition])
+
+    useEffect(() => {
+        if (!selectedSymbol) return
+        if (!positions.some((p) => p.symbol === selectedSymbol)) {
+            setSelectedSymbol(null)
+        }
+    }, [positions, selectedSymbol])
+
+    useEffect(() => {
+        if (!selectedPosition) {
+            setKlines([])
+            return
+        }
+        setChartLoading(true)
+        api.getKlines(selectedPosition.symbol, chartInterval, 500)
+            .then(setKlines)
+            .catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : "Klines failed"
+                setError(message)
+            })
+            .finally(() => setChartLoading(false))
+    }, [selectedPosition, chartInterval])
 
     const fetchOrders = useCallback(async () => {
         try {
@@ -181,6 +303,22 @@ export default function PositionsPage() {
 
     const totalPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0)
 
+    const entryLineTitle = selectedPosition
+        ? `入场 ${formatMarkPrice(selectedPosition.entry_price)}`
+        : "Entry"
+    const tpLineTitle =
+        chartModel && chartModel.tpPrice > 0
+            ? chartModel.tpPct > 0
+                ? `止盈 ${chartModel.tpPct.toFixed(1)}%`
+                : "止盈"
+            : "TP"
+    const slLineTitle =
+        chartModel && chartModel.slPrice > 0
+            ? chartModel.slPct > 0
+                ? `止损 ${chartModel.slPct.toFixed(1)}%`
+                : "止损"
+            : "SL"
+
     return (
         <Layout>
             <div className="space-y-6">
@@ -215,22 +353,38 @@ export default function PositionsPage() {
                     </div>
                 )}
 
-                {/* Positions table */}
-                <div
-                    className={cn(
-                        "bg-white dark:bg-zinc-900/70",
-                        "border border-zinc-100 dark:border-zinc-800",
-                        "rounded-xl shadow-sm backdrop-blur-xl",
-                        "overflow-hidden"
-                    )}
-                >
-                    {positions.length === 0 ? (
+                {/* Positions table + K-line chart */}
+                {positions.length === 0 ? (
+                    <div
+                        className={cn(
+                            "bg-white dark:bg-zinc-900/70",
+                            "border border-zinc-100 dark:border-zinc-800",
+                            "rounded-xl shadow-sm backdrop-blur-xl",
+                            "overflow-hidden"
+                        )}
+                    >
                         <div className="flex items-center justify-center py-16 text-sm text-zinc-400 dark:text-zinc-500">
                             No open positions
                         </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
+                    </div>
+                ) : (
+                    <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+                        <div
+                            className={cn(
+                                "w-full lg:flex-1 min-w-0",
+                                "bg-white dark:bg-zinc-900/70",
+                                "border border-zinc-100 dark:border-zinc-800",
+                                "rounded-xl shadow-sm backdrop-blur-xl",
+                                "overflow-hidden"
+                            )}
+                        >
+                            <div className="px-4 py-2 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-800/40">
+                                <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                                    点击一行在右侧查看 K 线；绿/黄/橙线分别为入场、止盈、止损（轴标签含目标收益率 %）
+                                </p>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
                                 <thead>
                                     <tr className="border-b border-zinc-100 dark:border-zinc-800">
                                         {[
@@ -258,10 +412,26 @@ export default function PositionsPage() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {positions.map((p) => (
+                                    {positions.map((p) => {
+                                        const isSel = selectedSymbol === p.symbol
+                                        return (
                                         <tr
                                             key={p.symbol}
-                                            className="border-b border-zinc-50 dark:border-zinc-800/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors"
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => setSelectedSymbol(p.symbol)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" || e.key === " ") {
+                                                    e.preventDefault()
+                                                    setSelectedSymbol(p.symbol)
+                                                }
+                                            }}
+                                            className={cn(
+                                                "border-b border-zinc-50 dark:border-zinc-800/50 transition-colors cursor-pointer",
+                                                isSel
+                                                    ? "bg-emerald-50/80 dark:bg-emerald-950/30"
+                                                    : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+                                            )}
                                         >
                                             <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
                                                 {p.symbol}
@@ -335,7 +505,10 @@ export default function PositionsPage() {
                                             <td className="px-4 py-3">
                                                 <button
                                                     type="button"
-                                                    onClick={() => handleClose(p.symbol)}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        void handleClose(p.symbol)
+                                                    }}
                                                     disabled={closing === p.symbol}
                                                     className={cn(
                                                         "inline-flex items-center gap-1",
@@ -357,12 +530,160 @@ export default function PositionsPage() {
                                                 </button>
                                             </td>
                                         </tr>
-                                    ))}
+                                        )
+                                    })}
                                 </tbody>
                             </table>
                         </div>
-                    )}
-                </div>
+                        </div>
+
+                        <div
+                            className={cn(
+                                "w-full lg:w-[min(100%,40rem)] shrink-0 flex flex-col min-h-0",
+                                "bg-white dark:bg-zinc-900/70",
+                                "border border-zinc-100 dark:border-zinc-800",
+                                "rounded-xl shadow-sm backdrop-blur-xl",
+                                "overflow-hidden"
+                            )}
+                        >
+                            {selectedPosition && chartModel ? (
+                                <>
+                                    <div className="p-3 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between flex-wrap gap-2">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <LineChart className="w-4 h-4 shrink-0 text-zinc-600 dark:text-zinc-300" />
+                                            <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+                                                {selectedPosition.symbol}
+                                            </span>
+                                            <span
+                                                className={cn(
+                                                    "text-[10px] font-medium px-2 py-0.5 rounded-full shrink-0",
+                                                    {
+                                                        "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400":
+                                                            selectedPosition.side === "LONG",
+                                                        "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400":
+                                                            selectedPosition.side === "SHORT",
+                                                    }
+                                                )}
+                                            >
+                                                {selectedPosition.side}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                            {CHART_INTERVALS.map((iv) => (
+                                                <button
+                                                    key={iv}
+                                                    type="button"
+                                                    onClick={() => setChartInterval(iv)}
+                                                    className={cn(
+                                                        "px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors",
+                                                        chartInterval === iv
+                                                            ? "bg-zinc-900 dark:bg-zinc-50 text-zinc-50 dark:text-zinc-900"
+                                                            : "text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                                                    )}
+                                                >
+                                                    {iv}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 p-2 min-h-[300px] min-w-0">
+                                        {chartLoading ? (
+                                            <div className="flex items-center justify-center h-full min-h-[280px] text-sm text-zinc-400">
+                                                Loading…
+                                            </div>
+                                        ) : klines.length > 0 ? (
+                                            <Suspense
+                                                fallback={
+                                                    <div className="flex items-center justify-center h-full min-h-[280px] text-sm text-zinc-400">
+                                                        Loading chart…
+                                                    </div>
+                                                }
+                                            >
+                                                <div className="h-[min(420px,50vh)] w-full min-h-[280px]">
+                                                    <TradeChart
+                                                        klines={klines}
+                                                        markers={chartMarkers}
+                                                        entryPrice={selectedPosition.entry_price}
+                                                        tpPrice={
+                                                            chartModel.tpPrice > 0
+                                                                ? chartModel.tpPrice
+                                                                : undefined
+                                                        }
+                                                        slPrice={
+                                                            chartModel.slPrice > 0
+                                                                ? chartModel.slPrice
+                                                                : undefined
+                                                        }
+                                                        entryLineTitle={entryLineTitle}
+                                                        tpLineTitle={tpLineTitle}
+                                                        slLineTitle={slLineTitle}
+                                                    />
+                                                </div>
+                                            </Suspense>
+                                        ) : (
+                                            <div className="flex items-center justify-center h-full min-h-[280px] text-sm text-zinc-400">
+                                                No kline data
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="p-3 border-t border-zinc-100 dark:border-zinc-800 flex flex-col gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400 font-mono">
+                                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                            <span>
+                                                入场时间（UTC）{" "}
+                                                <span className="text-zinc-900 dark:text-zinc-200">
+                                                    {fmtUtcCompact(selectedPosition.entry_time)}
+                                                </span>
+                                            </span>
+                                            <span>
+                                                入场价{" "}
+                                                <span className="text-emerald-600 dark:text-emerald-400">
+                                                    {formatMarkPrice(selectedPosition.entry_price)}
+                                                </span>
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                            {chartModel.tpPrice > 0 ? (
+                                                <span>
+                                                    止盈触发{" "}
+                                                    <span className="text-amber-600 dark:text-amber-400">
+                                                        {formatMarkPrice(chartModel.tpPrice)}
+                                                    </span>
+                                                    {chartModel.tpPct > 0 && (
+                                                        <span className="text-zinc-500 ml-1">
+                                                            ({chartModel.tpPct.toFixed(2)}%)
+                                                        </span>
+                                                    )}
+                                                </span>
+                                            ) : (
+                                                <span className="text-zinc-500">止盈：暂无（无挂单或未识别）</span>
+                                            )}
+                                            {chartModel.slPrice > 0 ? (
+                                                <span>
+                                                    止损触发{" "}
+                                                    <span className="text-orange-600 dark:text-orange-400">
+                                                        {formatMarkPrice(chartModel.slPrice)}
+                                                    </span>
+                                                    {chartModel.slPct > 0 && (
+                                                        <span className="text-zinc-500 ml-1">
+                                                            ({chartModel.slPct.toFixed(2)}%)
+                                                        </span>
+                                                    )}
+                                                </span>
+                                            ) : (
+                                                <span className="text-zinc-500">止损：暂无（无挂单或未识别）</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="flex flex-1 flex-col items-center justify-center min-h-[280px] px-4 text-center text-sm text-zinc-400 dark:text-zinc-500">
+                                    <LineChart className="w-8 h-8 mb-2 opacity-50" />
+                                    点击左侧某一行持仓，查看该合约 K 线与入场 / 止盈 / 止损横线
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
 
                 {/* Open Orders section — 默认折叠 */}
                 <div
