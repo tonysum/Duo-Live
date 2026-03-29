@@ -92,8 +92,9 @@ class BinanceUserStream:
 
                 async with websockets.connect(
                     ws_url,
-                    ping_interval=30,   # send ping every 30s
-                    ping_timeout=40,    # wait for pong (10s 在弱网下易触发 keepalive timeout)
+                    ping_interval=30,
+                    # None：不因「本端发出 ping 后未及时收到 pong」而主动断线（弱网/对端繁忙时仍 1011）
+                    ping_timeout=None,
                     close_timeout=5,
                 ) as ws:
                     logger.info("🔌 WebSocket 已连接")

@@ -48,6 +48,8 @@ export interface LiveTrade {
   quantity: number;
   pnl_usdt: number;
   leverage: number;
+  /** 相对入场价的价格收益率 %（与后端 R LONG/SHORT 定义一致） */
+  return_pct?: number;
 }
 
 export interface Signal {

@@ -170,9 +170,10 @@ class LiveTrader:
                         host="0.0.0.0",
                         port=8899,
                         log_level="warning",
-                        # 浏览器 / 移动网络抖动时默认 20s 易误判断线；放宽可减少 1011 keepalive timeout
-                        ws_ping_interval=30.0,
-                        ws_ping_timeout=120.0,
+                        # None = 不向浏览器发 RFC ping；避免弱网下 1011 keepalive ping timeout
+                        # 刷屏 asyncio ERROR。/ws/live 自带 JSON heartbeat 保活。
+                        ws_ping_interval=None,
+                        ws_ping_timeout=None,
                     )
                     api_server = uvicorn.Server(api_config)
                     tasks.append(api_server.serve())

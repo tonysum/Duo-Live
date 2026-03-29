@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -102,6 +103,8 @@ class LiveTradeItem(BaseModel):
     quantity: float
     pnl_usdt: float
     leverage: int = 0
+    #: 相对入场价的价格收益率 %（LONG: (exit-entry)/entry；SHORT: (entry-exit)/entry）
+    return_pct: float = 0.0
 
 
 class SignalItem(BaseModel):
@@ -333,6 +336,15 @@ def _finalize_trade(op: dict) -> dict:
         "quantity":    op["entry_qty"],   # original position size
         "pnl_usdt":    round(total_pnl, 6),
     }
+
+
+def _trade_return_pct(side: str, entry_price: float, exit_price: float) -> float:
+    """Price return vs entry (percent), same sign convention as spot PnL direction."""
+    if entry_price <= 0 or exit_price <= 0:
+        return 0.0
+    if side == "LONG":
+        return (exit_price - entry_price) / entry_price * 100.0
+    return (entry_price - exit_price) / entry_price * 100.0
 
 
 
@@ -605,6 +617,9 @@ def create_app(trader) -> FastAPI:
                 exit_ts = datetime.fromtimestamp(
                     t["exit_time"] / 1000, tz=timezone.utc
                 ).isoformat() if t["exit_time"] else ""
+                ret_pct = _trade_return_pct(
+                    t["side"], t["entry_price"], t["exit_price"]
+                )
                 result.append(LiveTradeItem(
                     symbol=t["symbol"],
                     side=t["side"],
@@ -614,6 +629,7 @@ def create_app(trader) -> FastAPI:
                     exit_time=exit_ts,
                     quantity=t["quantity"],
                     pnl_usdt=t["pnl_usdt"],
+                    return_pct=round(ret_pct, 4),
                 ))
             _cache.set(cache_key, result, ttl=30)
             return result
@@ -1070,6 +1086,8 @@ def create_app(trader) -> FastAPI:
 
         try:
             last_hash: str = ""
+            last_send_mono = time.monotonic()
+            _HB_SEC = 25.0
             while True:
                 # Build and send status update only when state has changed
                 try:
@@ -1101,11 +1119,20 @@ def create_app(trader) -> FastAPI:
                         }
                         await ws.send_json(data)
                         last_hash = new_hash
+                        last_send_mono = time.monotonic()
 
                 except Exception as e:
                     if _ws_live_send_dead(e):
                         break
                     logger.debug("WS status error: %s", e)
+
+                try:
+                    if time.monotonic() - last_send_mono >= _HB_SEC:
+                        await ws.send_json({"type": "heartbeat"})
+                        last_send_mono = time.monotonic()
+                except Exception as e:
+                    if _ws_live_send_dead(e):
+                        break
 
                 await asyncio.sleep(2)
 
