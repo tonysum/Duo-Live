@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { api, Status, Position, LiveTrade } from "@/lib/api"
+import { api, Status, Position, LiveTrade, Config } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
   Wallet,
@@ -12,8 +12,20 @@ import {
   AlertCircle,
   CreditCard,
   ArrowRight,
+  SlidersHorizontal,
 } from "lucide-react"
 import { Link } from "react-router-dom"
+
+function ParamRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3 text-xs py-1.5 border-b border-zinc-100 dark:border-zinc-800/80 last:border-0">
+      <span className="text-zinc-500 dark:text-zinc-400 shrink-0">{label}</span>
+      <span className="font-mono text-zinc-900 dark:text-zinc-100 text-right break-all">
+        {value}
+      </span>
+    </div>
+  )
+}
 
 function StatCard({
   label,
@@ -75,18 +87,21 @@ export default function Content() {
   const [status, setStatus] = useState<Status | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [trades, setTrades] = useState<LiveTrade[]>([])
+  const [runtimeCfg, setRuntimeCfg] = useState<Config | null>(null)
   const [error, setError] = useState("")
 
   const fetchData = async () => {
     try {
-      const [s, p, t] = await Promise.all([
+      const [s, p, t, cfg] = await Promise.all([
         api.getStatus(),
         api.getPositions(),
         api.getTrades(10),
+        api.getConfig(),
       ])
       setStatus(s)
       setPositions(p)
       setTrades(t)
+      setRuntimeCfg(cfg)
       setError("")
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to fetch data"
@@ -371,6 +386,151 @@ export default function Content() {
           </div>
         </div>
       </div>
+
+      {runtimeCfg && (
+        <div className="bg-white dark:bg-[#0F0F12] rounded-xl border border-gray-200 dark:border-[#1F1F23] overflow-hidden">
+          <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-900 dark:text-zinc-50" />
+                运行时参数
+              </h2>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
+                当前进程使用的资金、扫描与持仓管理配置（只读；
+                <Link
+                  to="/settings"
+                  className="text-zinc-700 dark:text-zinc-300 underline-offset-2 hover:underline"
+                >
+                  Settings
+                </Link>{" "}
+                / data/config.json）
+              </p>
+            </div>
+          </div>
+          <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2">
+                资金与仓位上限
+              </h3>
+              <ParamRow label="杠杆" value={`${runtimeCfg.leverage}x`} />
+              <ParamRow label="最大持仓数" value={String(runtimeCfg.max_positions)} />
+              <ParamRow
+                label="每日最大开仓"
+                value={String(runtimeCfg.max_entries_per_day)}
+              />
+              <ParamRow
+                label="保证金模式"
+                value={runtimeCfg.margin_mode === "percent" ? "余额百分比" : "固定金额"}
+              />
+              {runtimeCfg.margin_mode === "percent" ? (
+                <ParamRow label="保证金比例" value={`${runtimeCfg.margin_pct}%`} />
+              ) : (
+                <ParamRow
+                  label="固定保证金"
+                  value={`${runtimeCfg.live_fixed_margin_usdt} USDT`}
+                />
+              )}
+              <ParamRow
+                label="每日亏损限额"
+                value={
+                  runtimeCfg.daily_loss_limit_usdt <= 0
+                    ? "不限"
+                    : `${runtimeCfg.daily_loss_limit_usdt} USDT`
+                }
+              />
+              <ParamRow
+                label="持仓监控间隔"
+                value={`${runtimeCfg.monitor_interval_seconds}s`}
+              />
+              <ParamRow
+                label="已声明策略槽"
+                value={
+                  runtimeCfg.strategies?.length
+                    ? runtimeCfg.strategies
+                        .map(
+                          (s) =>
+                            `${s.id}${s.enabled ? "" : "(关)"}[${s.kind}]`
+                        )
+                        .join(" · ")
+                    : "—"
+                }
+              />
+            </div>
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2">
+                R24 扫描
+              </h3>
+              <ParamRow
+                label="策略 ID"
+                value={runtimeCfg.rolling.strategy_id}
+              />
+              <ParamRow label="Top N" value={String(runtimeCfg.rolling.top_n)} />
+              <ParamRow
+                label="24h 涨幅阈值"
+                value={`≥ ${runtimeCfg.rolling.min_pct_chg}%`}
+              />
+              <ParamRow
+                label="扫描间隔"
+                value={`${runtimeCfg.rolling.scan_interval_hours}h`}
+              />
+              <ParamRow
+                label="信号冷却"
+                value={`${runtimeCfg.rolling.signal_cooldown_hours}h`}
+              />
+              <ParamRow
+                label="新币过滤"
+                value={`≥ ${runtimeCfg.rolling.min_listed_days}d`}
+              />
+              <ParamRow
+                label="主盈利阶梯校验"
+                value={runtimeCfg.rolling.enable_main_profit_check ? "开启" : "关闭"}
+              />
+              <ParamRow
+                label="阶梯阈值"
+                value={runtimeCfg.rolling.main_profit_thresholds
+                  .map(([a, b]) => `${a}→${b}`)
+                  .join(", ")}
+              />
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2 mt-4">
+                持仓管理
+              </h3>
+              <ParamRow
+                label="初始止盈"
+                value={`${runtimeCfg.rolling.tp_initial_pct}%`}
+              />
+              <ParamRow
+                label="衰减止盈"
+                value={`${runtimeCfg.rolling.tp_reduced_pct}%（>${runtimeCfg.rolling.tp_hours_threshold}h）`}
+              />
+              <ParamRow
+                label="加仓后止盈"
+                value={`${runtimeCfg.rolling.tp_after_add_pct}%`}
+              />
+              <ParamRow label="止损" value={`${runtimeCfg.rolling.sl_threshold_pct}%`} />
+              <ParamRow
+                label="最长持仓"
+                value={`${runtimeCfg.rolling.max_hold_days}d（${runtimeCfg.max_hold_hours}h）`}
+              />
+              <ParamRow
+                label="追踪止损"
+                value={
+                  runtimeCfg.rolling.enable_trailing_stop
+                    ? `开 · 激活 ${runtimeCfg.rolling.trailing_activation_pct}% · 距离 ${runtimeCfg.rolling.trailing_distance_pct}%`
+                    : "关"
+                }
+              />
+              <ParamRow
+                label="逆势加仓"
+                value={
+                  runtimeCfg.rolling.enable_add_position
+                    ? `开 · 阈值 ${runtimeCfg.rolling.add_position_threshold_pct}% · 倍数 ${runtimeCfg.rolling.add_position_multiplier_pct}%`
+                    : "关"
+                }
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -239,6 +239,11 @@ export default function TradingPage() {
                                         )}
                                     >
                                         {sig.symbol.replace("USDT", "")}
+                                        {sig.strategy_id && sig.strategy_id !== "r24" && (
+                                            <span className="text-[9px] font-mono text-zinc-500 dark:text-zinc-400">
+                                                [{sig.strategy_id}]
+                                            </span>
+                                        )}
                                         <span className="text-amber-500 dark:text-amber-400">
                                             {sig.surge_ratio.toFixed(1)}x
                                         </span>

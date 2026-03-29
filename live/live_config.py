@@ -4,7 +4,7 @@ Strategy-independent parameters for the live trading system.
 Strategy-specific parameters live in rolling_config.py.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 import json
@@ -38,6 +38,9 @@ class LiveTradingConfig:
     # ── Persistence ────────────────────────────────────────────────────
     db_path: str = "data/trades.db"
 
+    # ── Multi-strategy manifest (declarative; runtime still wires instances in __main__) ──
+    strategies: list[dict] = field(default_factory=list)
+
     # ── Mutable fields (saveable via frontend) ────────────────────────
     MUTABLE_FIELDS = {
         "leverage", "max_positions", "max_entries_per_day",
@@ -49,14 +52,20 @@ class LiveTradingConfig:
         """Save mutable config fields to JSON; preserve ``rolling`` block if present."""
         path.parent.mkdir(parents=True, exist_ok=True)
         rolling_block: dict = {}
+        strategies_block: list = []
         if path.exists():
             try:
                 existing = json.loads(path.read_text())
                 rb = existing.get("rolling")
                 if isinstance(rb, dict):
                     rolling_block = rb
+                st = existing.get("strategies")
+                if isinstance(st, list):
+                    strategies_block = st
             except (OSError, json.JSONDecodeError):
                 pass
+        if self.strategies:
+            strategies_block = self.strategies
         data = {
             "leverage": self.leverage,
             "max_positions": self.max_positions,
@@ -68,6 +77,8 @@ class LiveTradingConfig:
         }
         if rolling_block:
             data["rolling"] = rolling_block
+        if strategies_block:
+            data["strategies"] = strategies_block
         path.write_text(json.dumps(data, indent=2))
         logger.info("Config saved to %s", path)
 
@@ -103,6 +114,8 @@ class LiveTradingConfig:
                 self.margin_mode = data["margin_mode"]
             if "margin_pct" in data and "margin_pct" not in ex:
                 self.margin_pct = float(data["margin_pct"])
+            if "strategies" in data and isinstance(data["strategies"], list):
+                self.strategies = [x for x in data["strategies"] if isinstance(x, dict)]
             logger.info("Config loaded from %s (excluded keys: %s)", path, ", ".join(sorted(ex)) or "-")
         except Exception as e:
             logger.warning("Failed to load config from %s: %s", path, e)

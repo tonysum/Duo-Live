@@ -1,5 +1,5 @@
 {
-  "leverage": 3,
+  "leverage": 2,
   "max_positions": 8,
   "max_entries_per_day": 8,
   "live_fixed_margin_usdt": 5.0,
@@ -18,7 +18,7 @@
     "trailing_activation_pct": 0.08,
     "trailing_distance_pct": 0.04,
     "add_position_threshold": 0.2,
-    "tp_after_add": 0.46,
+    "tp_after_add": 0.40,
     "max_hold_days": 7
   }
 }

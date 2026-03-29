@@ -10,8 +10,19 @@ import {
     RotateCcw,
 } from "lucide-react"
 
+/** Keys editable on Settings (subset of Config — excludes rolling snapshot). */
+type SettingsNumericKey =
+    | "leverage"
+    | "max_positions"
+    | "max_entries_per_day"
+    | "live_fixed_margin_usdt"
+    | "daily_loss_limit_usdt"
+    | "margin_pct"
+
+type SettingsDraft = Partial<Pick<Config, SettingsNumericKey | "margin_mode">>
+
 interface FieldConfig {
-    key: keyof Config
+    key: SettingsNumericKey
     label: string
     description: string
     type: "int" | "float"
@@ -81,7 +92,7 @@ const FIELDS: FieldConfig[] = [
 
 export default function SettingsPage() {
     const [config, setConfig] = useState<Config | null>(null)
-    const [draft, setDraft] = useState<Partial<Config>>({})
+    const [draft, setDraft] = useState<SettingsDraft>({})
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState("")
     const [success, setSuccess] = useState("")
@@ -106,7 +117,7 @@ export default function SettingsPage() {
             })
     }, [])
 
-    const handleChange = (key: keyof Config, value: string) => {
+    const handleChange = (key: SettingsNumericKey, value: string) => {
         const field = FIELDS.find((f) => f.key === key)
         if (!field) return
         const num = field.type === "int" ? parseInt(value, 10) : parseFloat(value)

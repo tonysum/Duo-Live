@@ -57,9 +57,11 @@ class RollingLiveScanner:
         signal_queue: asyncio.Queue,
         client: Optional[BinanceFuturesClient] = None,
         console: Optional[Console] = None,
+        strategy_id: Optional[str] = None,
     ):
         self.config = config
         self.signal_queue = signal_queue
+        self._strategy_id = strategy_id or getattr(config, "strategy_id", None) or "r24"
         self.client = client or BinanceFuturesClient()
         self.console = console or Console()
         self.running = False
@@ -207,6 +209,7 @@ class RollingLiveScanner:
                 price=price,
                 yesterday_avg_sell_vol=0.0,  # not used in rolling
                 hourly_sell_vol=0.0,
+                strategy_id=self._strategy_id,
             ))
 
         # Show runners-up (next few after top_n) for context

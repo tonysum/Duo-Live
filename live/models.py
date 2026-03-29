@@ -34,6 +34,8 @@ class SurgeSignal:
     hourly_sell_vol: float
     status: str = "pending"
     note: str = ""
+    #: Logical strategy that produced this signal (multi-strategy dispatch).
+    strategy_id: str = "r24"
 
     @property
     def signal_time(self) -> str:

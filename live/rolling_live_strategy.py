@@ -53,6 +53,7 @@ class RollingLiveStrategy(Strategy):
             signal_queue=signal_queue,
             client=client,
             console=console,
+            strategy_id=self.config.strategy_id,
         )
 
     # ── Entry Filter ──────────────────────────────────────────────

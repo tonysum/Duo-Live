@@ -23,6 +23,9 @@ ROLLING_JSON_KEY = "rolling"
 class RollingLiveConfig:
     """Configuration for Moonshot-R24 Rolling Strategy (live)."""
 
+    # Identity for multi-strategy routing (signals, attribution, monitor).
+    strategy_id: str = "r24"
+
     # ── 1. Signal Generation ─────────────────────────────────────────
     top_n: int = 5                        # 每次扫描取涨幅前 N 名
     min_pct_chg: float = 5.0             # 最小涨幅要求 10%
@@ -77,6 +80,8 @@ def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> No
         setattr(cfg, name, int(value))
     elif isinstance(cur, float):
         setattr(cfg, name, float(value))
+    elif isinstance(cur, str):
+        setattr(cfg, name, str(value))
     elif isinstance(cur, list):
         logger.warning("Unsupported list field override: %s", name)
 

@@ -57,6 +57,7 @@ export interface Signal {
   price: string;
   accepted: boolean;
   reject_reason: string;
+  strategy_id?: string;
 }
 
 export interface Kline {
@@ -68,20 +69,50 @@ export interface Kline {
   volume: number;
 }
 
+/** R24 rolling strategy runtime snapshot from GET /api/config */
+export interface RollingRuntimeParams {
+  strategy_id: string;
+  top_n: number;
+  min_pct_chg: number;
+  min_listed_days: number;
+  signal_cooldown_hours: number;
+  scan_interval_hours: number;
+  enable_main_profit_check: boolean;
+  main_profit_thresholds: number[][];
+  max_hold_days: number;
+  tp_initial_pct: number;
+  tp_reduced_pct: number;
+  tp_hours_threshold: number;
+  tp_after_add_pct: number;
+  sl_threshold_pct: number;
+  enable_trailing_stop: boolean;
+  trailing_activation_pct: number;
+  trailing_distance_pct: number;
+  enable_add_position: boolean;
+  add_position_threshold_pct: number;
+  add_position_multiplier_pct: number;
+}
+
+export interface StrategyManifestItem {
+  id: string;
+  kind: string;
+  enabled: boolean;
+}
+
 export interface Config {
   leverage: number;
   max_positions: number;
   max_entries_per_day: number;
   stop_loss_pct: number;
   strong_tp_pct: number;
-  medium_tp_pct: number;
-  weak_tp_pct: number;
   max_hold_hours: number;
-  surge_threshold: number;
   live_fixed_margin_usdt: number;
   daily_loss_limit_usdt: number;
   margin_mode: string;
   margin_pct: number;
+  monitor_interval_seconds: number;
+  rolling: RollingRuntimeParams;
+  strategies: StrategyManifestItem[];
 }
 
 export interface OrderRequest {

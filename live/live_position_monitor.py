@@ -72,6 +72,9 @@ class TrackedPosition:
     lowest_price: Optional[Decimal] = None    # 追踪止损: 持仓期间最低价
     has_added_position: bool = False           # 是否已加仓
 
+    # Multi-strategy: logical owner (persisted in position_attribution)
+    strategy_id: str = ""
+
 
 class LivePositionMonitor:
     """Monitor live positions with deferred TP/SL placement.
@@ -92,6 +95,7 @@ class LivePositionMonitor:
         notifier=None,  # TelegramNotifier (optional)
         store=None,     # TradeStore (optional, for live trade recording)
         strategy: "Strategy | None" = None,
+        strategy_registry: dict[str, "Strategy"] | None = None,
         on_sl_triggered=None,  # S: callable(symbol: str) invoked on every SL exit
     ):
         self.client = client
@@ -102,7 +106,15 @@ class LivePositionMonitor:
         self.store = store
         self.on_sl_triggered = on_sl_triggered  # S
         self.strategy = strategy
-        # Shortcut to rolling strategy config (TP/SL/max_hold params)
+        if strategy_registry is not None:
+            self._strategy_registry: dict[str, Any] = dict(strategy_registry)
+        else:
+            from .strategy import strategy_registry_key
+
+            k = strategy_registry_key(strategy)
+            self._strategy_registry = {k: strategy} if strategy else {}
+        self._default_strategy = strategy
+        # Shortcut to primary rolling config (fallback when per-position unknown)
         self._rc = getattr(strategy, 'config', None) if strategy else None
         self._positions: dict[str, TrackedPosition] = {}  # symbol → position
         self._running = False
@@ -113,6 +125,36 @@ class LivePositionMonitor:
         self._tick_cache: dict[str, Any] = {}  # symbol → Decimal tick_size or int price_precision
         self._tick_cache_ts: float = 0.0  # epoch seconds of last full refresh
 
+    def _resolve_eval_strategy(self, pos: TrackedPosition) -> Any:
+        """Pick Strategy instance for this position (multi-strategy)."""
+        sid = (pos.strategy_id or "").strip()
+        if sid and sid in self._strategy_registry:
+            return self._strategy_registry[sid]
+        if self.store and not sid:
+            got = self.store.get_position_attribution(pos.symbol, pos.side)
+            if got:
+                pos.strategy_id = got
+                if got in self._strategy_registry:
+                    return self._strategy_registry[got]
+        return self._default_strategy
+
+    def _rolling_cfg_for_position(self, pos: TrackedPosition) -> Any:
+        """RollingLiveConfig (or None) for TP/SL % fallbacks for this position."""
+        ev = self._resolve_eval_strategy(pos)
+        return getattr(ev, "config", None) if ev else self._rc
+
+    def _clear_closed_position_store(self, pos: TrackedPosition) -> None:
+        if not self.store:
+            return
+        try:
+            self.store.delete_position_state(pos.symbol)
+        except Exception as e:
+            logger.debug("delete_position_state: %s", e)
+        try:
+            self.store.delete_position_attribution(pos.symbol, pos.side)
+        except Exception as e:
+            logger.debug("delete_position_attribution: %s", e)
+
     def track(
         self,
         symbol: str,
@@ -122,6 +164,7 @@ class LivePositionMonitor:
         deferred_tp_sl: dict[str, str],
         tp_pct: float = 33.0,
         sl_pct: float = 18.0,
+        strategy_id: str = "",
     ):
         """Start tracking a new position (entry pending, TP/SL deferred)."""
         pos = TrackedPosition(
@@ -132,6 +175,7 @@ class LivePositionMonitor:
             deferred_tp_sl=deferred_tp_sl,
             current_tp_pct=tp_pct,
             current_sl_pct=sl_pct,
+            strategy_id=strategy_id or "",
         )
         self._positions[symbol] = pos
         logger.info(
@@ -216,6 +260,11 @@ class LivePositionMonitor:
                         symbol, tracked.current_tp_pct, tracked.strength,
                     )
 
+            if self.store:
+                tid = self.store.get_position_attribution(symbol, side)
+                if tid:
+                    tracked.strategy_id = tid
+
             self._positions[symbol] = tracked
             recovered += 1
 
@@ -232,7 +281,8 @@ class LivePositionMonitor:
                     entry_p = Decimal(str(pos_risk.entry_price))
                     # Use persisted tp_pct if available, otherwise fall back to strong_tp_pct
                     tp_pct = tracked.current_tp_pct
-                    sl_pct = self._rc.sl_threshold * 100 if self._rc else 44.0
+                    _rc = self._rolling_cfg_for_position(tracked)
+                    sl_pct = _rc.sl_threshold * 100 if _rc else 44.0
 
                     if side == "SHORT":
                         tp_price = entry_p * (1 - Decimal(str(tp_pct)) / 100)
@@ -507,9 +557,10 @@ class LivePositionMonitor:
                 return  # still failed, skip remaining checks
 
         # ── 1.5. Strategy-based position evaluation ─────────────
-        if self.strategy:
+        eval_strat = self._resolve_eval_strategy(pos)
+        if eval_strat:
             from .strategy import PositionAction
-            action: PositionAction = await self.strategy.evaluate_position(
+            action: PositionAction = await eval_strat.evaluate_position(
                 client=self.client,
                 pos=pos,
                 config=self.config,
@@ -521,8 +572,9 @@ class LivePositionMonitor:
                 )
                 if self.notifier:
                     if action.reason == "max_hold_time":
+                        _rc = self._rolling_cfg_for_position(pos)
                         await self.notifier.notify_timeout_close(
-                            pos.symbol, self._rc.max_hold_days * 24 if self._rc else 264,
+                            pos.symbol, _rc.max_hold_days * 24 if _rc else 264,
                         )
                     else:
                         await self.notifier.send(
@@ -642,6 +694,7 @@ class LivePositionMonitor:
                         except Exception as e:
                             logger.warning("撤销止损单失败: %s", e)
                     pos.closed = True
+                    self._clear_closed_position_store(pos)
                 else:
                     # Manually cancelled — auto re-place TP
                     logger.warning(
@@ -679,6 +732,7 @@ class LivePositionMonitor:
                         except Exception as e:
                             logger.warning("撤销止盈单失败: %s", e)
                     pos.closed = True
+                    self._clear_closed_position_store(pos)
                 else:
                     # Manually cancelled — auto re-place SL
                     logger.warning(
@@ -706,9 +760,10 @@ class LivePositionMonitor:
                 await self._re_place_single_order(pos, "sl")
 
         # ── 3. Max hold time enforcement (legacy fallback, strategy handles this) ──
-        if not pos.closed and pos.entry_filled and not self.strategy:
+        if not pos.closed and pos.entry_filled and not self._default_strategy:
             hold_hours = (now - pos.created_at).total_seconds() / 3600
-            _max_hold_h = self._rc.max_hold_days * 24 if self._rc else 264
+            _rc = self._rolling_cfg_for_position(pos)
+            _max_hold_h = _rc.max_hold_days * 24 if _rc else 264
             if hold_hours >= _max_hold_h:
                 logger.warning(
                     "⏰ 持仓超时 (%dh): %s — 市价平仓",
@@ -993,11 +1048,7 @@ class LivePositionMonitor:
         await self._cancel_tp_sl(pos)
         
         pos.closed = True
-        if self.store:
-            try:
-                self.store.delete_position_state(pos.symbol)
-            except Exception as e:
-                logger.debug("清除持仓 TP 状态失败: %s", e)
+        self._clear_closed_position_store(pos)
         
         # 记录平仓摘要（包含订单取消详情）
         if cancelled_orders:
@@ -1135,7 +1186,8 @@ class LivePositionMonitor:
             prefix = "tp"
             label = "止盈"
         else:
-            pct = Decimal(str(self._rc.sl_threshold * 100 if self._rc else 44.0))
+            _rc = self._rolling_cfg_for_position(pos)
+            pct = Decimal(str(_rc.sl_threshold * 100 if _rc else 44.0))
             if is_long:
                 price = pos.entry_price * (1 - pct / 100)
             else:
@@ -1594,7 +1646,8 @@ class LivePositionMonitor:
             # Continue with tracked quantity and side as fallback
             is_long = pos.side == "LONG"
         # Fall back to the original TP percentage from config
-        fallback_pct = self._rc.tp_initial * 100 if self._rc else 34.0
+        _rc = self._rolling_cfg_for_position(pos)
+        fallback_pct = _rc.tp_initial * 100 if _rc else 34.0
         tp_mult = (
             Decimal("1") + Decimal(str(fallback_pct)) / Decimal("100")
             if is_long
@@ -1758,6 +1811,7 @@ class LivePositionMonitor:
             if is_tp and not pos.tp_triggered:
                 pos.tp_triggered = True
                 pos.closed = True
+                self._clear_closed_position_store(pos)
                 logger.info(
                     "⚡ WS 止盈触发: %s %s rp=%s (即时通知)",
                     symbol, pos.side, realized_pnl,
@@ -1783,6 +1837,7 @@ class LivePositionMonitor:
             elif is_sl and not pos.sl_triggered:
                 pos.sl_triggered = True
                 pos.closed = True
+                self._clear_closed_position_store(pos)
                 logger.info(
                     "⚡ WS 止损触发: %s %s rp=%s (即时通知)",
                     symbol, pos.side, realized_pnl,
@@ -1851,6 +1906,7 @@ class LivePositionMonitor:
                         symbol,
                     )
                     pos.closed = True
+                    self._clear_closed_position_store(pos)
             else:
                 # Update live entry price if changed (e.g. after partial fill)
                 try:

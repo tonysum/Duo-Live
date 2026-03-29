@@ -27,7 +27,7 @@ from .store import TradeStore, SignalEvent
 from .binance_client import BinanceFuturesClient
 from .notifier import TelegramNotifier
 from .ws_stream import BinanceUserStream
-from .strategy import Strategy
+from .strategy import Strategy, signal_strategy_id, strategy_registry_key
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,10 @@ class LiveTrader:
 
         # Strategy config shortcut
         self.rolling_config = getattr(self.strategy, 'config', None)
+
+        # Multi-strategy: id → Strategy (single-process; extend __main__ to add more)
+        sk = strategy_registry_key(self.strategy)
+        self._strategy_registry: dict[str, Strategy] = {sk: self.strategy}
 
         # Shared Binance client
         self.client = BinanceFuturesClient()
@@ -98,6 +102,7 @@ class LiveTrader:
             notifier=self.notifier,
             store=self.store,
             strategy=self.strategy,
+            strategy_registry=self._strategy_registry,
             # S: after every SL exit, block same-day re-entry for that symbol
             on_sl_triggered=self.scanner.add_sl_cooldown,
         )
@@ -161,8 +166,13 @@ class LiveTrader:
 
                     api_app = create_app(self)
                     api_config = uvicorn.Config(
-                        api_app, host="0.0.0.0", port=8899,
+                        api_app,
+                        host="0.0.0.0",
+                        port=8899,
                         log_level="warning",
+                        # 浏览器 / 移动网络抖动时默认 20s 易误判断线；放宽可减少 1011 keepalive timeout
+                        ws_ping_interval=30.0,
+                        ws_ping_timeout=120.0,
                     )
                     api_server = uvicorn.Server(api_config)
                     tasks.append(api_server.serve())
@@ -187,6 +197,14 @@ class LiveTrader:
         """Close non-async resources (client is closed by async with)."""
         self.store.close()
         self.console.print("[dim]Resources cleaned up.[/dim]")
+
+    def _resolve_strategy(self, strategy_id: str) -> Strategy:
+        """Return strategy instance for ``strategy_id`` (fallback: primary)."""
+        s = self._strategy_registry.get(strategy_id)
+        if s is not None:
+            return s
+        logger.warning("Unknown strategy_id %s — using primary strategy", strategy_id)
+        return self.strategy
 
     # ------------------------------------------------------------------
     # Signal Consumer
@@ -256,6 +274,7 @@ class LiveTrader:
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
                             accepted=False, reject_reason="already in position",
+                            strategy_id=signal_strategy_id(s),
                         ))
                     else:
                         filtered.append(s)
@@ -271,6 +290,7 @@ class LiveTrader:
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
                             accepted=False, reject_reason=reason,
+                            strategy_id=signal_strategy_id(s),
                         ))
                     filtered = []
                 else:
@@ -284,6 +304,7 @@ class LiveTrader:
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
                             accepted=False, reject_reason=reason,
+                            strategy_id=signal_strategy_id(s),
                         ))
                     filtered = filtered[:available_slots]
 
@@ -314,6 +335,7 @@ class LiveTrader:
                             price=str(s.price),
                             accepted=False,
                             reject_reason="auto_trade_disabled",
+                            strategy_id=signal_strategy_id(s),
                         ))
                         continue
 
@@ -347,6 +369,8 @@ class LiveTrader:
         symbol = signal.symbol
         now = utc_now()
         pending = live_pending or set()
+        sid = signal_strategy_id(signal)
+        strat = self._resolve_strategy(sid)
 
         # ── Guard checks (exchange positions + in-flight orders) ──
         try:
@@ -364,6 +388,7 @@ class LiveTrader:
                     timestamp=now.isoformat(), symbol=symbol,
                     surge_ratio=signal.surge_ratio, price=str(signal.price),
                     accepted=False, reject_reason="already in position",
+                    strategy_id=sid,
                 ))
                 return False
             if combined_count >= self.config.max_positions:
@@ -374,6 +399,7 @@ class LiveTrader:
                     timestamp=now.isoformat(), symbol=symbol,
                     surge_ratio=signal.surge_ratio, price=str(signal.price),
                     accepted=False, reject_reason=reason,
+                    strategy_id=sid,
                 ))
                 return False
         except Exception as e:
@@ -390,13 +416,14 @@ class LiveTrader:
                 timestamp=now.isoformat(), symbol=symbol,
                 surge_ratio=signal.surge_ratio, price=str(signal.price),
                 accepted=False, reject_reason=f"price fetch failed: {e}",
+                strategy_id=sid,
             ))
             return False
 
         signal_price = Decimal(str(signal.price))
 
         # ── Strategy entry filter (risk filters + entry params) ─
-        decision = await self.strategy.filter_entry(
+        decision = await strat.filter_entry(
             client=self.client,
             signal=signal,
             entry_price=entry_price,
@@ -412,6 +439,7 @@ class LiveTrader:
                 price=str(entry_price),
                 accepted=False,
                 reject_reason=decision.reject_reason,
+                strategy_id=sid,
             ))
             self.console.print(
                 f"  [yellow]FILTERED[/yellow] {symbol}: {decision.reject_reason}"
@@ -437,6 +465,7 @@ class LiveTrader:
                         timestamp=now.isoformat(), symbol=symbol,
                         surge_ratio=signal.surge_ratio, price=str(entry_price),
                         accepted=False, reject_reason=reason,
+                        strategy_id=sid,
                     ))
                     if self.notifier:
                         await self.notifier.notify_daily_loss_limit(
@@ -480,8 +509,11 @@ class LiveTrader:
                     surge_ratio=signal.surge_ratio,
                     price=str(entry_price),
                     accepted=True,
+                    strategy_id=sid,
                 ))
                 entry_side = decision.side  # already "SHORT" or "LONG"
+                if self.store:
+                    self.store.upsert_position_attribution(symbol, entry_side, sid)
                 self.console.print(
                     f"  [green]🟢 LIVE ENTRY[/green] {symbol} {entry_side} @ {entry_price} "
                     f"(qty: {quantity:.4f})"
@@ -496,6 +528,7 @@ class LiveTrader:
                         deferred_tp_sl=order_result["deferred_tp_sl"],
                         tp_pct=decision.tp_pct,
                         sl_pct=decision.sl_pct,
+                        strategy_id=sid,
                     )
                 # Telegram notification
                 if self.notifier:

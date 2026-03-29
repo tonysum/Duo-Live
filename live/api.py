@@ -18,6 +18,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .rolling_config import RollingLiveConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +111,7 @@ class SignalItem(BaseModel):
     price: str
     accepted: bool
     reject_reason: str
+    strategy_id: str = "r24"
 
 
 class KlineItem(BaseModel):
@@ -133,6 +136,39 @@ class OrderRequest(BaseModel):
     trading_password: str = ""
 
 
+class RollingParamsResponse(BaseModel):
+    """R24 / rolling strategy snapshot (read-only via GET /api/config)."""
+
+    strategy_id: str
+    top_n: int
+    min_pct_chg: float
+    min_listed_days: int
+    signal_cooldown_hours: int
+    scan_interval_hours: int
+    enable_main_profit_check: bool
+    main_profit_thresholds: list[list[int]]
+    max_hold_days: int
+    tp_initial_pct: float
+    tp_reduced_pct: float
+    tp_hours_threshold: int
+    tp_after_add_pct: float
+    sl_threshold_pct: float
+    enable_trailing_stop: bool
+    trailing_activation_pct: float
+    trailing_distance_pct: float
+    enable_add_position: bool
+    add_position_threshold_pct: float
+    add_position_multiplier_pct: float
+
+
+class StrategyManifestItem(BaseModel):
+    """Declared strategy slot from config (multi-strategy roadmap)."""
+
+    id: str
+    kind: str = "rolling_r24"
+    enabled: bool = True
+
+
 class ConfigResponse(BaseModel):
     leverage: int
     max_positions: int
@@ -144,6 +180,9 @@ class ConfigResponse(BaseModel):
     daily_loss_limit_usdt: float
     margin_mode: str
     margin_pct: float
+    monitor_interval_seconds: int
+    rolling: RollingParamsResponse
+    strategies: list[StrategyManifestItem]
 
 
 class AutoTradeRequest(BaseModel):
@@ -337,6 +376,34 @@ async def _fetch_open_position_items(trader) -> list[PositionItem]:
             margin_ratio=margin_ratio,
         ))
     return items
+
+
+def _rolling_params_response(rc: object | None) -> RollingParamsResponse:
+    """Build API rolling snapshot from live strategy config (defaults if missing)."""
+    r = rc if isinstance(rc, RollingLiveConfig) else RollingLiveConfig()
+    pairs: list[list[int]] = [[int(a), int(b)] for a, b in r.main_profit_thresholds]
+    return RollingParamsResponse(
+        strategy_id=str(getattr(r, "strategy_id", None) or "r24"),
+        top_n=r.top_n,
+        min_pct_chg=r.min_pct_chg,
+        min_listed_days=r.min_listed_days,
+        signal_cooldown_hours=r.signal_cooldown_hours,
+        scan_interval_hours=r.scan_interval_hours,
+        enable_main_profit_check=r.enable_main_profit_check,
+        main_profit_thresholds=pairs,
+        max_hold_days=r.max_hold_days,
+        tp_initial_pct=round(r.tp_initial * 100.0, 4),
+        tp_reduced_pct=round(r.tp_reduced * 100.0, 4),
+        tp_hours_threshold=r.tp_hours_threshold,
+        tp_after_add_pct=round(r.tp_after_add * 100.0, 4),
+        sl_threshold_pct=round(r.sl_threshold * 100.0, 4),
+        enable_trailing_stop=r.enable_trailing_stop,
+        trailing_activation_pct=round(r.trailing_activation_pct * 100.0, 4),
+        trailing_distance_pct=round(r.trailing_distance_pct * 100.0, 4),
+        enable_add_position=r.enable_add_position,
+        add_position_threshold_pct=round(r.add_position_threshold * 100.0, 4),
+        add_position_multiplier_pct=round(r.add_position_multiplier * 100.0, 4),
+    )
 
 
 def _ws_live_send_dead(exc: BaseException) -> bool:
@@ -573,6 +640,7 @@ def create_app(trader) -> FastAPI:
                 price=e.price,
                 accepted=e.accepted,
                 reject_reason=e.reject_reason,
+                strategy_id=e.strategy_id or "r24",
             )
             for e in events
         ]
@@ -585,17 +653,40 @@ def create_app(trader) -> FastAPI:
         """Get current trading config."""
         c = trader.config
         rc = trader.rolling_config
+        rolling = _rolling_params_response(rc)
+        manifests: list[StrategyManifestItem] = []
+        for item in c.strategies or []:
+            if not isinstance(item, dict):
+                continue
+            manifests.append(
+                StrategyManifestItem(
+                    id=str(item.get("id", rolling.strategy_id)),
+                    kind=str(item.get("kind", "rolling_r24")),
+                    enabled=bool(item.get("enabled", True)),
+                )
+            )
+        if not manifests:
+            manifests = [
+                StrategyManifestItem(
+                    id=rolling.strategy_id,
+                    kind="rolling_r24",
+                    enabled=True,
+                )
+            ]
         return ConfigResponse(
             leverage=c.leverage,
             max_positions=c.max_positions,
             max_entries_per_day=c.max_entries_per_day,
-            stop_loss_pct=rc.sl_threshold * 100 if rc else 44.0,
-            strong_tp_pct=rc.tp_initial * 100 if rc else 34.0,
-            max_hold_hours=rc.max_hold_days * 24 if rc else 264,
+            stop_loss_pct=rolling.sl_threshold_pct,
+            strong_tp_pct=rolling.tp_initial_pct,
+            max_hold_hours=rolling.max_hold_days * 24,
             live_fixed_margin_usdt=float(c.live_fixed_margin_usdt),
             daily_loss_limit_usdt=float(c.daily_loss_limit_usdt),
             margin_mode=c.margin_mode,
             margin_pct=c.margin_pct,
+            monitor_interval_seconds=c.monitor_interval_seconds,
+            rolling=rolling,
+            strategies=manifests,
         )
 
     @app.post("/api/config")

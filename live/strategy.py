@@ -125,3 +125,26 @@ class Strategy(ABC):
         Return PositionAction("hold"), ("close", reason), or
         ("adjust_tp", new_tp_pct=X, new_strength=Y).
         """
+
+
+def signal_strategy_id(signal: Any) -> str:
+    """Stable id from a queued signal (default ``r24`` for legacy callers)."""
+    sid = getattr(signal, "strategy_id", None)
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    return "r24"
+
+
+def strategy_registry_key(strategy: Optional["Strategy"]) -> str:
+    """Derive registry key for a Strategy (uses ``config.strategy_id`` when present)."""
+    if strategy is None:
+        return "default"
+    cfg = getattr(strategy, "config", None)
+    if cfg is not None:
+        sid = getattr(cfg, "strategy_id", None)
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+    sid = getattr(strategy, "strategy_id", None)
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    return "default"

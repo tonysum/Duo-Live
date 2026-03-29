@@ -28,6 +28,7 @@ class SignalEvent:
     accepted: bool
     reject_reason: str = ""
     risk_metrics_json: str = "{}"
+    strategy_id: str = "r24"
 
 
 @dataclass
@@ -61,7 +62,16 @@ CREATE TABLE IF NOT EXISTS signal_events (
     price TEXT NOT NULL,
     accepted INTEGER NOT NULL,
     reject_reason TEXT NOT NULL DEFAULT '',
-    risk_metrics_json TEXT NOT NULL DEFAULT '{}'
+    risk_metrics_json TEXT NOT NULL DEFAULT '{}',
+    strategy_id TEXT NOT NULL DEFAULT 'r24'
+);
+
+CREATE TABLE IF NOT EXISTS position_attribution (
+    symbol TEXT NOT NULL,
+    position_side TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, position_side)
 );
 
 CREATE TABLE IF NOT EXISTS live_trades (
@@ -121,10 +131,43 @@ class TradeStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._migrate_schema()
 
     def close(self):
         with self._lock:
             self._conn.close()
+
+    def _migrate_schema(self) -> None:
+        """Add columns/tables created after older installs."""
+        with self._lock:
+            row_factory = self._conn.row_factory
+            self._conn.row_factory = None
+            try:
+                cols = {
+                    r[1]
+                    for r in self._conn.execute(
+                        "PRAGMA table_info(signal_events)"
+                    ).fetchall()
+                }
+                if "strategy_id" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE signal_events ADD COLUMN strategy_id "
+                        "TEXT NOT NULL DEFAULT 'r24'"
+                    )
+                self._conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS position_attribution (
+                        symbol TEXT NOT NULL,
+                        position_side TEXT NOT NULL,
+                        strategy_id TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (symbol, position_side)
+                    )
+                    """
+                )
+            finally:
+                self._conn.row_factory = row_factory
+            self._conn.commit()
 
     # ── Signal Events ────────────────────────────────────────────────
 
@@ -151,6 +194,8 @@ class TradeStore:
         for row in rows:
             d = {k: row[k] for k in cols}
             d["accepted"] = bool(d["accepted"])
+            if not d.get("strategy_id"):
+                d["strategy_id"] = "r24"
             result.append(SignalEvent(**d))
         return result
 
@@ -241,6 +286,46 @@ class TradeStore:
         with self._lock:
             self._conn.execute(
                 "DELETE FROM position_state WHERE symbol = ?", (symbol,)
+            )
+            self._conn.commit()
+
+    # ── Position ↔ strategy attribution (multi-strategy) ────────────
+
+    def upsert_position_attribution(
+        self, symbol: str, position_side: str, strategy_id: str
+    ) -> None:
+        """Record which logical strategy owns an open position (symbol + side)."""
+        now = utc_now().isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO position_attribution
+                    (symbol, position_side, strategy_id, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol, position_side) DO UPDATE SET
+                    strategy_id = excluded.strategy_id,
+                    updated_at = excluded.updated_at
+                """,
+                (symbol, position_side, strategy_id, now),
+            )
+            self._conn.commit()
+
+    def get_position_attribution(
+        self, symbol: str, position_side: str
+    ) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT strategy_id FROM position_attribution "
+                "WHERE symbol = ? AND position_side = ?",
+                (symbol, position_side),
+            ).fetchone()
+        return str(row["strategy_id"]) if row else None
+
+    def delete_position_attribution(self, symbol: str, position_side: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM position_attribution WHERE symbol = ? AND position_side = ?",
+                (symbol, position_side),
             )
             self._conn.commit()
 

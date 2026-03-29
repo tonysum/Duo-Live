@@ -10,6 +10,8 @@ import {
     X,
     Loader2,
     ClipboardList,
+    ChevronRight,
+    ChevronDown,
 } from "lucide-react"
 
 function formatMarkPrice(p: number) {
@@ -51,6 +53,8 @@ export default function PositionsPage() {
     const [error, setError] = useState("")
     /** WebSocket 已连接且收到过 payload 时为 true；断线时用 REST 兜底 */
     const [liveWsOk, setLiveWsOk] = useState(false)
+    /** Open Orders 区块默认折叠 */
+    const [ordersExpanded, setOrdersExpanded] = useState(false)
     const wsAttemptRef = useRef(0)
 
     const fetchOrders = useCallback(async () => {
@@ -360,17 +364,7 @@ export default function PositionsPage() {
                     )}
                 </div>
 
-                {/* Open Orders section */}
-                <div>
-                    <h2 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2 mb-3">
-                        <ClipboardList className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
-                        Open Orders
-                        <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
-                            ({orders.length})
-                        </span>
-                    </h2>
-                </div>
-
+                {/* Open Orders section — 默认折叠 */}
                 <div
                     className={cn(
                         "bg-white dark:bg-zinc-900/70",
@@ -379,96 +373,122 @@ export default function PositionsPage() {
                         "overflow-hidden"
                     )}
                 >
-                    {orders.length === 0 ? (
-                        <div className="flex items-center justify-center py-12 text-sm text-zinc-400 dark:text-zinc-500">
-                            No open orders
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead>
-                                    <tr className="border-b border-zinc-100 dark:border-zinc-800">
-                                        {["Symbol", "Type", "Side", "Price / Trigger", "Qty", "Filled", "Status", "Time"].map(
-                                            (h) => (
-                                                <th
-                                                    key={h}
-                                                    className="text-left px-4 py-3 text-[11px] font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400 whitespace-nowrap"
-                                                >
-                                                    {h}
-                                                </th>
-                                            )
-                                        )}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {orders.map((o) => (
-                                        <tr
-                                            key={`${o.id}-${o.is_algo}`}
-                                            className="border-b border-zinc-50 dark:border-zinc-800/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors"
-                                        >
-                                            <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
-                                                {o.symbol}
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span
-                                                    className={cn(
-                                                        "text-[10px] font-medium px-2 py-0.5 rounded-full",
-                                                        o.is_algo
-                                                            ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
-                                                            : "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
-                                                    )}
-                                                >
-                                                    {orderTypeLabel(o.type)}
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span
-                                                    className={cn(
-                                                        "text-[10px] font-medium px-2 py-0.5 rounded-full",
-                                                        o.side === "BUY"
-                                                            ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                                            : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
-                                                    )}
-                                                >
-                                                    {o.side}
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
-                                                {o.stop_price > 0 ? (
-                                                    <span className="text-orange-600 dark:text-orange-400">
-                                                        ⚡ {o.stop_price}
-                                                    </span>
-                                                ) : o.price > 0 ? (
-                                                    o.price
-                                                ) : (
-                                                    "市价"
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
-                                                {o.quantity > 0 ? o.quantity : "全仓"}
-                                            </td>
-                                            <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
-                                                {o.filled_qty}
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <span
-                                                    className={cn(
-                                                        "text-[10px] font-medium px-2 py-0.5 rounded-full",
-                                                        "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
-                                                    )}
-                                                >
-                                                    {o.status}
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-500">
-                                                {formatTime(o.time)}
-                                            </td>
+                    <button
+                        type="button"
+                        onClick={() => setOrdersExpanded((e) => !e)}
+                        aria-expanded={ordersExpanded}
+                        className={cn(
+                            "w-full flex items-center justify-between gap-2 px-4 py-3 text-left",
+                            "text-lg font-bold text-zinc-900 dark:text-white",
+                            "hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition-colors duration-200",
+                            ordersExpanded && "border-b border-zinc-100 dark:border-zinc-800"
+                        )}
+                    >
+                        <span className="flex items-center gap-2 min-w-0">
+                            <ClipboardList className="w-4 h-4 shrink-0 text-zinc-900 dark:text-zinc-50" />
+                            <span>Open Orders</span>
+                            <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
+                                ({orders.length})
+                            </span>
+                        </span>
+                        {ordersExpanded ? (
+                            <ChevronDown className="w-5 h-5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden />
+                        ) : (
+                            <ChevronRight className="w-5 h-5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden />
+                        )}
+                    </button>
+
+                    {ordersExpanded &&
+                        (orders.length === 0 ? (
+                            <div className="flex items-center justify-center py-12 text-sm text-zinc-400 dark:text-zinc-500">
+                                No open orders
+                            </div>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
+                                    <thead>
+                                        <tr className="border-b border-zinc-100 dark:border-zinc-800">
+                                            {["Symbol", "Type", "Side", "Price / Trigger", "Qty", "Filled", "Status", "Time"].map(
+                                                (h) => (
+                                                    <th
+                                                        key={h}
+                                                        className="text-left px-4 py-3 text-[11px] font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400 whitespace-nowrap"
+                                                    >
+                                                        {h}
+                                                    </th>
+                                                )
+                                            )}
                                         </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                                    </thead>
+                                    <tbody>
+                                        {orders.map((o) => (
+                                            <tr
+                                                key={`${o.id}-${o.is_algo}`}
+                                                className="border-b border-zinc-50 dark:border-zinc-800/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors"
+                                            >
+                                                <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                                                    {o.symbol}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span
+                                                        className={cn(
+                                                            "text-[10px] font-medium px-2 py-0.5 rounded-full",
+                                                            o.is_algo
+                                                                ? "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+                                                                : "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
+                                                        )}
+                                                    >
+                                                        {orderTypeLabel(o.type)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span
+                                                        className={cn(
+                                                            "text-[10px] font-medium px-2 py-0.5 rounded-full",
+                                                            o.side === "BUY"
+                                                                ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
+                                                                : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                                        )}
+                                                    >
+                                                        {o.side}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                    {o.stop_price > 0 ? (
+                                                        <span className="text-orange-600 dark:text-orange-400">
+                                                            ⚡ {o.stop_price}
+                                                        </span>
+                                                    ) : o.price > 0 ? (
+                                                        o.price
+                                                    ) : (
+                                                        "市价"
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                    {o.quantity > 0 ? o.quantity : "全仓"}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                    {o.filled_qty}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span
+                                                        className={cn(
+                                                            "text-[10px] font-medium px-2 py-0.5 rounded-full",
+                                                            "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
+                                                        )}
+                                                    >
+                                                        {o.status}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-500">
+                                                    {formatTime(o.time)}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ))}
                 </div>
             </div>
         </Layout>

@@ -102,6 +102,7 @@ export default function SignalsPage() {
                                             {[
                                                 "Time",
                                                 "Symbol",
+                                                "Strategy",
                                                 "Surge",
                                                 "Signal Price",
                                                 "Live Price",
@@ -134,6 +135,9 @@ export default function SignalsPage() {
                                                     </td>
                                                     <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
                                                         {s.symbol}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-[11px] font-mono text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
+                                                        {s.strategy_id ?? "r24"}
                                                     </td>
                                                     <td className="px-4 py-3">
                                                         <span className="text-xs font-medium font-mono text-amber-600 dark:text-amber-400">
