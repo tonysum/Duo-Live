@@ -574,12 +574,11 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
 
         auto_trade = "auto-trade" in run_flags
 
-        # ── Strategy: Rolling R24 ──────────────────────────────────
-        from .rolling_config import RollingLiveConfig, load_rolling_from_config_json
-        from .rolling_live_strategy import RollingLiveStrategy
-        rolling_config = RollingLiveConfig()
-        load_rolling_from_config_json(rolling_config, CONFIG_PATH)
-        strategy = RollingLiveStrategy(config=rolling_config)
+        # ── Strategy: Rolling R24 (单路或多路 config.strategies) ───
+        from .rolling_live_strategy import load_rolling_strategies_from_live_config
+        strat_list = load_rolling_strategies_from_live_config(config, CONFIG_PATH)
+        primary = strat_list[0]
+        rolling_config = primary.config
 
         # ── Startup confirmation ──────────────────────────────
         print()
@@ -587,7 +586,11 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("  ⚠️  实盘模式 — 将使用真实资金交易")
         print("=" * 50)
 
-        print(f"  策略:       🔄 Rolling R24 (24h 滚动涨幅)")
+        if len(strat_list) > 1:
+            ids = ", ".join(s.config.strategy_id for s in strat_list)
+            print(f"  策略:       🔄 Rolling ×{len(strat_list)}  ({ids})")
+        else:
+            print(f"  策略:       🔄 Rolling R24 (24h 滚动涨幅)")
         print(f"  涨幅阈值:   {rolling_config.min_pct_chg}%")
         print(f"  Top N:      {rolling_config.top_n}")
         print(f"  扫描间隔:   {rolling_config.scan_interval_hours}h")
@@ -610,7 +613,11 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print()
         
 
-        trader = LiveTrader(config=config, strategy=strategy)
+        trader = LiveTrader(
+            config=config,
+            strategy=primary,
+            extra_strategies=strat_list[1:],
+        )
         trader.auto_trade_enabled = auto_trade
         asyncio.run(trader.start())
 

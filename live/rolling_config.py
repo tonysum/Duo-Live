@@ -9,6 +9,7 @@ R24 strategy overrides live in ``data/config.json`` under the ``"rolling"`` key
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import dataclass, field, fields
@@ -89,8 +90,13 @@ def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> No
 def load_rolling_from_config_json(
     rolling: RollingLiveConfig,
     path: Path | None = None,
+    *,
+    log_applied: bool = True,
 ) -> bool:
     """Read ``"rolling"`` from ``data/config.json`` and apply to ``rolling``.
+
+    ``log_applied=False`` avoids INFO spam when this runs on hot paths (e.g. frequent
+    :func:`~live.api.get_config`).
 
     Returns True if a non-empty rolling object was found and processed.
     """
@@ -119,14 +125,28 @@ def load_rolling_from_config_json(
         else:
             unknown.append(k)
     if unknown:
+        unk = ", ".join(sorted(unknown))
+        msg = f"config.json rolling: unknown keys (ignored): {unk}"
+        (logger.debug if not log_applied else logger.info)(msg)
+    if log_applied:
         logger.info(
-            "config.json rolling: unknown keys (ignored): %s",
-            ", ".join(sorted(unknown)),
+            "Rolling params from %s [%s] — applied: [%s]",
+            p,
+            ROLLING_JSON_KEY,
+            ", ".join(applied) or "-",
         )
-    logger.info(
-        "Rolling params from %s [%s] — applied: [%s]",
-        p,
-        ROLLING_JSON_KEY,
-        ", ".join(applied) or "-",
-    )
     return True
+
+
+def clone_rolling_config(base: RollingLiveConfig) -> RollingLiveConfig:
+    """Deep copy for per-slot RollingLiveConfig (lists e.g. main_profit_thresholds)."""
+    return copy.deepcopy(base)
+
+
+def apply_rolling_overrides(rolling: RollingLiveConfig, block: dict) -> None:
+    """Apply key/values from a JSON object onto ``rolling`` (same rules as config file)."""
+    rolling_names = {f.name for f in fields(RollingLiveConfig)}
+    for k, v in block.items():
+        if v is None or k not in rolling_names:
+            continue
+        _apply_rolling_field(rolling, k, v)

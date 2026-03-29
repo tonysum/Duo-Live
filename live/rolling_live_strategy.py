@@ -14,14 +14,20 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from .strategy import Strategy, EntryDecision, PositionAction
-from .rolling_config import RollingLiveConfig
+from .live_config import CONFIG_PATH, LiveTradingConfig
+from .strategy import Strategy, EntryDecision, PositionAction, strategy_registry_key
+from .rolling_config import (
+    RollingLiveConfig,
+    apply_rolling_overrides,
+    clone_rolling_config,
+    load_rolling_from_config_json,
+)
 
 if TYPE_CHECKING:
     from .binance_client import BinanceFuturesClient
-    from .live_config import LiveTradingConfig
     from .live_position_monitor import TrackedPosition
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,13 @@ class RollingLiveStrategy(Strategy):
 
         # Cache for listing dates (avoid re-fetching)
         self._listing_cache: dict[str, Optional[datetime]] = {}
+
+    def _rid(self) -> str:
+        """Log prefix id (与 SurgeSignal.strategy_id 一致)."""
+        sid = getattr(self.config, "strategy_id", None)
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+        return "r24"
 
     # ── Scanner ────────────────────────────────────────────────────
 
@@ -72,9 +85,10 @@ class RollingLiveStrategy(Strategy):
         symbol = signal.symbol
         pct_chg = signal.surge_ratio  # reused field
 
+        rid = self._rid()
         logger.info(
-            "🔍 R24 入场过滤: %s (24h涨幅=%.1f%%, 价格=%.6f)",
-            symbol, pct_chg, float(entry_price),
+            "[%s] 🔍 R24 入场过滤: %s (24h涨幅=%.1f%%, 价格=%.6f)",
+            rid, symbol, pct_chg, float(entry_price),
         )
 
         # ── 0. Cooldown period check ───────────────────────────
@@ -93,8 +107,9 @@ class RollingLiveStrategy(Strategy):
                             hours_ago = (now - trade_time).total_seconds() / 3600
                             if hours_ago < self.config.signal_cooldown_hours:
                                 logger.info(
-                                    "  ❌ 冷却期: %s %.1f小时前刚入场 < 冷却%dh",
-                                    symbol, hours_ago, self.config.signal_cooldown_hours,
+                                    "[%s]   ❌ 冷却期: %s %.1f小时前刚入场 < 冷却%dh",
+                                    rid, symbol, hours_ago,
+                                    self.config.signal_cooldown_hours,
                                 )
                                 return EntryDecision(
                                     should_enter=False,
@@ -116,8 +131,8 @@ class RollingLiveStrategy(Strategy):
                 days_listed = (now - listing_date).days
                 if days_listed < self.config.min_listed_days:
                     logger.info(
-                        "  ❌ 新币过滤: %s 上市%d天 < %d天 (上市日: %s)",
-                        symbol, days_listed, self.config.min_listed_days,
+                        "[%s]   ❌ 新币过滤: %s 上市%d天 < %d天 (上市日: %s)",
+                        rid, symbol, days_listed, self.config.min_listed_days,
                         listing_date.strftime("%Y-%m-%d"),
                     )
                     return EntryDecision(
@@ -125,11 +140,15 @@ class RollingLiveStrategy(Strategy):
                         reject_reason=f"新币过滤: 上市{days_listed}天 < {self.config.min_listed_days}天",
                     )
                 logger.info(
-                    "  ✅ 上市天数: %s 已上市%d天 (上市日: %s)",
-                    symbol, days_listed, listing_date.strftime("%Y-%m-%d"),
+                    "[%s]   ✅ 上市天数: %s 已上市%d天 (上市日: %s)",
+                    rid, symbol, days_listed,
+                    listing_date.strftime("%Y-%m-%d"),
                 )
             else:
-                logger.info("  ⚠️ 上市日期: %s 无法获取 (跳过检查)", symbol)
+                logger.info(
+                    "[%s]   ⚠️ 上市日期: %s 无法获取 (跳过检查)",
+                    rid, symbol,
+                )
 
         # ── 2. Main profit check ───────────────────────────────
         if self.config.enable_main_profit_check:
@@ -143,9 +162,10 @@ class RollingLiveStrategy(Strategy):
 
                     if from_avg_pct < threshold:
                         logger.info(
-                            "  ❌ 主力未获利: %s 距30d均价 %.1f%% < 阈值 %d%% "
+                            "[%s]   ❌ 主力未获利: %s 距30d均价 %.1f%% < 阈值 %d%% "
                             "(30d均价=%.6f, 昨收=%.6f)",
-                            symbol, from_avg_pct, threshold, avg_price, yesterday_close,
+                            rid, symbol, from_avg_pct, threshold,
+                            avg_price, yesterday_close,
                         )
                         return EntryDecision(
                             should_enter=False,
@@ -155,25 +175,29 @@ class RollingLiveStrategy(Strategy):
                             ),
                         )
                     logger.info(
-                        "  ✅ 主力获利: %s 距30d均价 +%.1f%% ≥ 阈值 %d%% "
+                        "[%s]   ✅ 主力获利: %s 距30d均价 +%.1f%% ≥ 阈值 %d%% "
                         "(30d均价=%.6f, 昨收=%.6f)",
-                        symbol, from_avg_pct, threshold, avg_price, yesterday_close,
+                        rid, symbol, from_avg_pct, threshold,
+                        avg_price, yesterday_close,
                     )
                 else:
                     logger.info(
-                        "  ⚠️ 主力获利: %s 数据不足 (30d均价=%s, 昨收=%s, 跳过检查)",
-                        symbol, avg_price, yesterday_close,
+                        "[%s]   ⚠️ 主力获利: %s 数据不足 (30d均价=%s, 昨收=%s, 跳过检查)",
+                        rid, symbol, avg_price, yesterday_close,
                     )
             except Exception as e:
-                logger.warning("  ⚠️ 主力获利检查异常 %s (fail-open): %s", symbol, e)
+                logger.warning(
+                    "[%s]   ⚠️ 主力获利检查异常 %s (fail-open): %s",
+                    rid, symbol, e,
+                )
 
         # ── All checks passed ──────────────────────────────────
         tp_pct = self.config.tp_initial * 100   # 0.34 → 34%
         sl_pct = self.config.sl_threshold * 100  # 0.44 → 44%
 
         logger.info(
-            "  🟢 %s 通过全部过滤 → SHORT TP=%.0f%% SL=%.0f%%",
-            symbol, tp_pct, sl_pct,
+            "[%s]   🟢 %s 通过全部过滤 → SHORT TP=%.0f%% SL=%.0f%%",
+            rid, symbol, tp_pct, sl_pct,
         )
         return EntryDecision(
             should_enter=True,
@@ -202,6 +226,7 @@ class RollingLiveStrategy(Strategy):
         if not pos.entry_fill_time or not pos.entry_price:
             return PositionAction("hold")
 
+        rid = self._rid()
         entry_price = float(pos.entry_price)
         hold_hours = (now - pos.entry_fill_time).total_seconds() / 3600
 
@@ -222,8 +247,8 @@ class RollingLiveStrategy(Strategy):
         # If TP needs adjustment, request it
         if abs(pos.current_tp_pct - target_tp_pct) > 0.1:
             logger.info(
-                "📊 R24 TP调整: %s hold=%.1fh — TP %.1f%% → %.1f%%",
-                pos.symbol, hold_hours, pos.current_tp_pct, target_tp_pct,
+                "[%s] 📊 R24 TP调整: %s hold=%.1fh — TP %.1f%% → %.1f%%",
+                rid, pos.symbol, hold_hours, pos.current_tp_pct, target_tp_pct,
             )
             return PositionAction(
                 "adjust_tp",
@@ -242,9 +267,10 @@ class RollingLiveStrategy(Strategy):
                 rise_from_entry = (current_price - entry_price) / entry_price
                 if rise_from_entry >= self.config.add_position_threshold:
                     logger.info(
-                        "📈 R24 加仓触发: %s — 入场 %.6f, 当前 %.6f, "
+                        "[%s] 📈 R24 加仓触发: %s — 入场 %.6f, 当前 %.6f, "
                         "涨幅 %.1f%% ≥ 阈值 %.0f%%",
-                        pos.symbol, entry_price, current_price, rise_from_entry * 100,
+                        rid, pos.symbol, entry_price, current_price,
+                        rise_from_entry * 100,
                         self.config.add_position_threshold * 100,
                     )
                     return PositionAction(
@@ -274,9 +300,9 @@ class RollingLiveStrategy(Strategy):
                     trailing_price = lowest * (1 + self.config.trailing_distance_pct)
                     if current_price >= trailing_price:
                         logger.info(
-                            "📈 R24 追踪止损触发: %s — 最低 %.6f, 当前 %.6f, "
+                            "[%s] 📈 R24 追踪止损触发: %s — 最低 %.6f, 当前 %.6f, "
                             "回弹线 %.6f (激活=%.0f%%, 距离=%.0f%%)",
-                            pos.symbol, lowest, current_price, trailing_price,
+                            rid, pos.symbol, lowest, current_price, trailing_price,
                             self.config.trailing_activation_pct * 100,
                             self.config.trailing_distance_pct * 100,
                         )
@@ -354,3 +380,81 @@ class RollingLiveStrategy(Strategy):
         except Exception as e:
             logger.debug("获取 %s 昨日收盘价失败: %s", symbol, e)
             return None
+
+
+def merged_rolling_configs_from_live_config(
+    live_cfg: LiveTradingConfig,
+    config_path: Path | None = None,
+    *,
+    log_rolling_load: bool = True,
+) -> list[RollingLiveConfig]:
+    """Merge global ``rolling`` + ``strategies[]`` into :class:`RollingLiveConfig` list.
+
+    Same rules as :func:`load_rolling_strategies_from_live_config` but without
+    constructing Strategy instances (for API snapshots, etc.).
+
+    Pass ``log_rolling_load=False`` when called often (e.g. GET /api/config) to
+    avoid flooding logs with rolling apply summaries.
+    """
+    path = config_path or CONFIG_PATH
+    base = RollingLiveConfig()
+    load_rolling_from_config_json(base, path, log_applied=log_rolling_load)
+
+    slots = live_cfg.strategies if isinstance(live_cfg.strategies, list) else []
+    if not slots:
+        return [base]
+
+    out: list[RollingLiveConfig] = []
+    for item in slots:
+        if not isinstance(item, dict):
+            continue
+        if item.get("enabled") is False:
+            continue
+        kind = str(item.get("kind", "rolling")).lower()
+        if kind != "rolling":
+            logger.warning(
+                "strategies[] slot skipped (unsupported kind=%r)", item.get("kind"),
+            )
+            continue
+        rc = clone_rolling_config(base)
+        nested = item.get("rolling")
+        if isinstance(nested, dict) and nested:
+            apply_rolling_overrides(rc, nested)
+        slot_id = item.get("id")
+        if isinstance(slot_id, str) and slot_id.strip():
+            rc.strategy_id = slot_id.strip()
+        out.append(rc)
+
+    if not out:
+        logger.info(
+            "strategies[] had no enabled rolling slots — using single global rolling",
+        )
+        return [base]
+
+    keys = [rc.strategy_id for rc in out]
+    if len(set(keys)) != len(keys):
+        raise ValueError(
+            "Each enabled strategy slot needs a unique id / strategy_id "
+            f"(check config.strategies), got: {keys!r}",
+        )
+    return out
+
+
+def load_rolling_strategies_from_live_config(
+    live_cfg: LiveTradingConfig,
+    config_path: Path | None = None,
+) -> list[RollingLiveStrategy]:
+    """Build one or more :class:`RollingLiveStrategy` from ``rolling`` + ``strategies[]``.
+
+    - If ``live_cfg.strategies`` is empty: single strategy from global ``rolling``.
+    - Otherwise: one entry per manifest item with ``kind`` ``rolling`` and
+      ``enabled`` not false. Each item may include a ``rolling`` object to override
+      the global baseline; ``id`` sets :attr:`RollingLiveConfig.strategy_id`
+      (must be unique across enabled slots).
+
+    Returns:
+        Non-empty list; falls back to a single global-rolling strategy if every
+        slot is disabled or invalid.
+    """
+    configs = merged_rolling_configs_from_live_config(live_cfg, config_path)
+    return [RollingLiveStrategy(config=c) for c in configs]

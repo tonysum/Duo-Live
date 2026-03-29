@@ -19,7 +19,9 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .live_config import CONFIG_PATH
 from .rolling_config import RollingLiveConfig
+from .rolling_live_strategy import merged_rolling_configs_from_live_config
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +188,8 @@ class ConfigResponse(BaseModel):
     monitor_interval_seconds: int
     rolling: RollingParamsResponse
     strategies: list[StrategyManifestItem]
+    #: 进程内每路策略的最终 Rolling 快照（顺序与 scanner 一致；多路时右栏逐条展示）
+    strategy_runtimes: list[RollingParamsResponse] = []
 
 
 class AutoTradeRequest(BaseModel):
@@ -689,6 +693,21 @@ def create_app(trader) -> FastAPI:
                     enabled=True,
                 )
             ]
+        # 与 config.json manifest 对齐：避免仅进程内 1 路时看板只显示首路参数
+        try:
+            merged_cfgs = merged_rolling_configs_from_live_config(
+                c, CONFIG_PATH, log_rolling_load=False
+            )
+            runtimes = [_rolling_params_response(rc) for rc in merged_cfgs]
+        except ValueError as e:
+            logger.warning("strategy_runtimes fallback (manifest): %s", e)
+            ordered = getattr(trader, "_strategies_ordered", None)
+            if not ordered:
+                ordered = [trader.strategy]
+            runtimes = [
+                _rolling_params_response(getattr(s, "config", None))
+                for s in ordered
+            ]
         return ConfigResponse(
             leverage=c.leverage,
             max_positions=c.max_positions,
@@ -703,6 +722,7 @@ def create_app(trader) -> FastAPI:
             monitor_interval_seconds=c.monitor_interval_seconds,
             rolling=rolling,
             strategies=manifests,
+            strategy_runtimes=runtimes,
         )
 
     @app.post("/api/config")

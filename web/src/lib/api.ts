@@ -115,6 +115,8 @@ export interface Config {
   monitor_interval_seconds: number;
   rolling: RollingRuntimeParams;
   strategies: StrategyManifestItem[];
+  /** 进程内每路策略的 Rolling 快照（多路时与 rolling 主快照同源为首路） */
+  strategy_runtimes?: RollingRuntimeParams[];
 }
 
 export interface OrderRequest {

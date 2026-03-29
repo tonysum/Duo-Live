@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react"
-import { api, Status, Position, LiveTrade, Config } from "@/lib/api"
+import {
+  api,
+  Status,
+  Position,
+  LiveTrade,
+  Config,
+  RollingRuntimeParams,
+} from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
   Wallet,
@@ -23,6 +30,93 @@ function ParamRow({ label, value }: { label: string; value: string }) {
       <span className="font-mono text-zinc-900 dark:text-zinc-100 text-right break-all">
         {value}
       </span>
+    </div>
+  )
+}
+
+/** 单路 Rolling 扫描 + 持仓管理参数（多策略时重复块） */
+function RollingRuntimeBlock({ rolling }: { rolling: RollingRuntimeParams }) {
+  const maxHoldH = rolling.max_hold_days * 24
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-zinc-100 dark:border-zinc-800",
+        "bg-zinc-50/70 dark:bg-zinc-900/40 p-3 space-y-2"
+      )}
+    >
+      <h3 className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-200 tracking-wide">
+        {rolling.strategy_id}
+      </h3>
+      <div>
+        <h4 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+          扫描
+        </h4>
+        <ParamRow label="Top N" value={String(rolling.top_n)} />
+        <ParamRow
+          label="24h 涨幅阈值"
+          value={`≥ ${rolling.min_pct_chg}%`}
+        />
+        <ParamRow
+          label="扫描间隔"
+          value={`${rolling.scan_interval_hours}h`}
+        />
+        <ParamRow
+          label="信号冷却"
+          value={`${rolling.signal_cooldown_hours}h`}
+        />
+        <ParamRow
+          label="新币过滤"
+          value={`≥ ${rolling.min_listed_days}d`}
+        />
+        <ParamRow
+          label="主盈利阶梯校验"
+          value={rolling.enable_main_profit_check ? "开启" : "关闭"}
+        />
+        <ParamRow
+          label="阶梯阈值"
+          value={rolling.main_profit_thresholds
+            .map(([a, b]) => `${a}→${b}`)
+            .join(", ")}
+        />
+      </div>
+      <div>
+        <h4 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+          持仓管理
+        </h4>
+        <ParamRow
+          label="初始止盈"
+          value={`${rolling.tp_initial_pct}%`}
+        />
+        <ParamRow
+          label="衰减止盈"
+          value={`${rolling.tp_reduced_pct}%（>${rolling.tp_hours_threshold}h）`}
+        />
+        <ParamRow
+          label="加仓后止盈"
+          value={`${rolling.tp_after_add_pct}%`}
+        />
+        <ParamRow label="止损" value={`${rolling.sl_threshold_pct}%`} />
+        <ParamRow
+          label="最长持仓"
+          value={`${rolling.max_hold_days}d（${maxHoldH}h）`}
+        />
+        <ParamRow
+          label="追踪止损"
+          value={
+            rolling.enable_trailing_stop
+              ? `开 · 激活 ${rolling.trailing_activation_pct}% · 距离 ${rolling.trailing_distance_pct}%`
+              : "关"
+          }
+        />
+        <ParamRow
+          label="逆势加仓"
+          value={
+            rolling.enable_add_position
+              ? `开 · 阈值 ${rolling.add_position_threshold_pct}% · 倍数 ${rolling.add_position_multiplier_pct}%`
+              : "关"
+          }
+        />
+      </div>
     </div>
   )
 }
@@ -396,14 +490,16 @@ export default function Content() {
                 运行时参数
               </h2>
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
-                当前进程使用的资金、扫描与持仓管理配置（只读；
+                资金为账户级；Rolling 为每路策略合并全局
+                <code className="text-[10px] mx-0.5">rolling</code>
+                后的进程内快照（只读；
                 <Link
                   to="/settings"
                   className="text-zinc-700 dark:text-zinc-300 underline-offset-2 hover:underline"
                 >
                   Settings
                 </Link>{" "}
-                / data/config.json）
+                / data/config.json）。
               </p>
             </div>
           </div>
@@ -443,7 +539,7 @@ export default function Content() {
                 value={`${runtimeCfg.monitor_interval_seconds}s`}
               />
               <ParamRow
-                label="已声明策略槽"
+                label="配置声明 strategies"
                 value={
                   runtimeCfg.strategies?.length
                     ? runtimeCfg.strategies
@@ -456,77 +552,20 @@ export default function Content() {
                 }
               />
             </div>
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2">
-                R24 扫描
+            <div className="space-y-3 min-w-0">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Rolling（每路策略）
               </h3>
-              <ParamRow
-                label="策略 ID"
-                value={runtimeCfg.rolling.strategy_id}
-              />
-              <ParamRow label="Top N" value={String(runtimeCfg.rolling.top_n)} />
-              <ParamRow
-                label="24h 涨幅阈值"
-                value={`≥ ${runtimeCfg.rolling.min_pct_chg}%`}
-              />
-              <ParamRow
-                label="扫描间隔"
-                value={`${runtimeCfg.rolling.scan_interval_hours}h`}
-              />
-              <ParamRow
-                label="信号冷却"
-                value={`${runtimeCfg.rolling.signal_cooldown_hours}h`}
-              />
-              <ParamRow
-                label="新币过滤"
-                value={`≥ ${runtimeCfg.rolling.min_listed_days}d`}
-              />
-              <ParamRow
-                label="主盈利阶梯校验"
-                value={runtimeCfg.rolling.enable_main_profit_check ? "开启" : "关闭"}
-              />
-              <ParamRow
-                label="阶梯阈值"
-                value={runtimeCfg.rolling.main_profit_thresholds
-                  .map(([a, b]) => `${a}→${b}`)
-                  .join(", ")}
-              />
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-2 mt-4">
-                持仓管理
-              </h3>
-              <ParamRow
-                label="初始止盈"
-                value={`${runtimeCfg.rolling.tp_initial_pct}%`}
-              />
-              <ParamRow
-                label="衰减止盈"
-                value={`${runtimeCfg.rolling.tp_reduced_pct}%（>${runtimeCfg.rolling.tp_hours_threshold}h）`}
-              />
-              <ParamRow
-                label="加仓后止盈"
-                value={`${runtimeCfg.rolling.tp_after_add_pct}%`}
-              />
-              <ParamRow label="止损" value={`${runtimeCfg.rolling.sl_threshold_pct}%`} />
-              <ParamRow
-                label="最长持仓"
-                value={`${runtimeCfg.rolling.max_hold_days}d（${runtimeCfg.max_hold_hours}h）`}
-              />
-              <ParamRow
-                label="追踪止损"
-                value={
-                  runtimeCfg.rolling.enable_trailing_stop
-                    ? `开 · 激活 ${runtimeCfg.rolling.trailing_activation_pct}% · 距离 ${runtimeCfg.rolling.trailing_distance_pct}%`
-                    : "关"
-                }
-              />
-              <ParamRow
-                label="逆势加仓"
-                value={
-                  runtimeCfg.rolling.enable_add_position
-                    ? `开 · 阈值 ${runtimeCfg.rolling.add_position_threshold_pct}% · 倍数 ${runtimeCfg.rolling.add_position_multiplier_pct}%`
-                    : "关"
-                }
-              />
+              {(runtimeCfg.strategy_runtimes &&
+              runtimeCfg.strategy_runtimes.length > 0
+                ? runtimeCfg.strategy_runtimes
+                : [runtimeCfg.rolling]
+              ).map((r, idx) => (
+                <RollingRuntimeBlock
+                  key={`${r.strategy_id}-${idx}`}
+                  rolling={r}
+                />
+              ))}
             </div>
           </div>
         </div>

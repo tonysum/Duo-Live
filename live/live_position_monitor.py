@@ -96,7 +96,7 @@ class LivePositionMonitor:
         store=None,     # TradeStore (optional, for live trade recording)
         strategy: "Strategy | None" = None,
         strategy_registry: dict[str, "Strategy"] | None = None,
-        on_sl_triggered=None,  # S: callable(symbol: str) invoked on every SL exit
+        on_sl_triggered=None,  # S: callable(symbol, strategy_id) on SL exit
     ):
         self.client = client
         self.executor = executor
@@ -717,7 +717,9 @@ class LivePositionMonitor:
                         )
                     # S: notify scanner to block same-day re-entry
                     if self.on_sl_triggered:
-                        self.on_sl_triggered(pos.symbol)
+                        self.on_sl_triggered(
+                            pos.symbol, pos.strategy_id or "",
+                        )
                     self._record_live_trade(
                         pos, event="sl",
                         entry_price=str(pos.entry_price or ""),
@@ -1850,7 +1852,7 @@ class LivePositionMonitor:
                     )
                 # S: notify scanner to block same-day re-entry
                 if self.on_sl_triggered:
-                    self.on_sl_triggered(symbol)
+                    self.on_sl_triggered(symbol, pos.strategy_id or "")
                 self._record_live_trade(
                     pos, "sl",
                     exit_price=avg_price,

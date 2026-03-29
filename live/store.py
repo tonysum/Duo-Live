@@ -333,6 +333,9 @@ class TradeStore:
 
     def save_balance_snapshot(self, date: str, total_balance: float, unrealized_pnl: float = 0) -> None:
         """Save or update a daily balance snapshot (upsert by date)."""
+        # SQLite 不接受 Decimal；余额来自交易所常为 Decimal
+        tb = float(total_balance)
+        up = float(unrealized_pnl)
         with self._lock:
             self._conn.execute(
                 """INSERT INTO balance_snapshots (date, total_balance, unrealized_pnl)
@@ -340,7 +343,7 @@ class TradeStore:
                    ON CONFLICT(date) DO UPDATE SET
                      total_balance = excluded.total_balance,
                      unrealized_pnl = excluded.unrealized_pnl""",
-                (date, total_balance, unrealized_pnl),
+                (date, tb, up),
             )
             self._conn.commit()
 

@@ -37,7 +37,7 @@
     {
       "id": "r24_slow",
       "kind": "rolling",
-      "enabled": false,
+      "enabled": true,
       "rolling": {
         "scan_interval_hours": 4,
         "top_n": 6,

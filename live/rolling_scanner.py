@@ -73,6 +73,13 @@ class RollingLiveScanner:
         self._sl_cooldown: set[str] = set()
         self._cache_date: Optional[date] = None
 
+    def _lp(self, fmt: str, *args) -> None:
+        """Log with [strategy_id] prefix so多路扫描器在日志中可区分。"""
+        logger.info("[%s] " + fmt, self._strategy_id, *args)
+
+    def _lpe(self, fmt: str, *args, exc_info: bool = False) -> None:
+        logger.error("[%s] " + fmt, self._strategy_id, *args, exc_info=exc_info)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -80,7 +87,7 @@ class RollingLiveScanner:
     async def run_forever(self):
         """Main loop: scan at each UTC hour boundary."""
         self.running = True
-        logger.info(
+        self._lp(
             "RollingLiveScanner started (min_pct_chg=%.1f%%, top_n=%d, interval=%dh)",
             self.config.min_pct_chg, self.config.top_n,
             self.config.scan_interval_hours,
@@ -99,14 +106,14 @@ class RollingLiveScanner:
                     new_signals += 1
             self._log_scan_summary(new_signals, stats, startup=True)
         except Exception as e:
-            logger.error("❌ R24 启动扫描错误: %s", e, exc_info=True)
+            self._lpe("❌ R24 启动扫描错误: %s", e, exc_info=True)
 
         while self.running:
             now = datetime.now(timezone.utc)
             interval_h = self.config.scan_interval_hours
             next_scan = _next_scan_utc(now, interval_h)
             wait_seconds = (next_scan - now).total_seconds()
-            logger.info(
+            self._lp(
                 "⏳ 下次 R24 定时扫描: %s UTC (约 %.0f 秒后)",
                 next_scan.strftime("%Y-%m-%d %H:%M:%S"),
                 wait_seconds,
@@ -132,7 +139,7 @@ class RollingLiveScanner:
                 self._log_scan_summary(new_signals, stats)
 
             except Exception as e:
-                logger.error("❌ R24 扫描周期错误: %s", e, exc_info=True)
+                self._lpe("❌ R24 扫描周期错误: %s", e, exc_info=True)
 
     async def stop(self):
         self.running = False
@@ -142,7 +149,7 @@ class RollingLiveScanner:
         key = self._cooldown_key(symbol)
         self._sl_cooldown.add(key)
         self._seen_signals.add(key)
-        logger.info("🛎️ SL冷却: %s 冷却期内不再入场", symbol)
+        self._lp("🛎️ SL冷却: %s 冷却期内不再入场", symbol)
 
     # ------------------------------------------------------------------
     # Core Scan Logic
@@ -242,21 +249,21 @@ class RollingLiveScanner:
         if stats["sl_cooldown"] > 0:
             parts.append(f"{stats['sl_cooldown']} SL冷却")
         parts.append(f"{new_signals} new")
-        logger.info("%s: %s", prefix, " | ".join(parts))
+        self._lp("%s: %s", prefix, " | ".join(parts))
 
         # Top candidates detail
         top_detail = stats.get("top_detail", [])
         if top_detail:
-            for sym, pct, status in top_detail:
-                logger.info("  #1 %s +%.1f%% → %s", sym, pct, status)
+            for rank, (sym, pct, status) in enumerate(top_detail, start=1):
+                self._lp("  #%d %s +%.1f%% → %s", rank, sym, pct, status)
         elif stats["above_threshold"] == 0:
-            logger.info("  无币种达到涨幅阈值 %.0f%%", self.config.min_pct_chg)
+            self._lp("  无币种达到涨幅阈值 %.0f%%", self.config.min_pct_chg)
 
         # Runners-up for context
         runners = stats.get("runners_up", [])
         if runners:
             ru_str = ", ".join(f"{s} +{p:.1f}%" for s, p in runners)
-            logger.info("  候选: %s", ru_str)
+            self._lp("  候选: %s", ru_str)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -278,7 +285,7 @@ class RollingLiveScanner:
         today = now.date()
         if self._cache_date != today:
             if self._seen_signals:
-                logger.info(
+                self._lp(
                     "UTC date changed to %s — clearing dedup set (%d), symbol list",
                     today, len(self._seen_signals),
                 )
@@ -299,7 +306,7 @@ class RollingLiveScanner:
             and s.contract_type.value == "PERPETUAL"
             and s.status.value == "TRADING"
         }
-        logger.info("Found %d tradeable USDT perpetual symbols", len(self._usdt_symbols))
+        self._lp("Found %d tradeable USDT perpetual symbols", len(self._usdt_symbols))
         return self._usdt_symbols
 
     def clear_dedup_cache(self):

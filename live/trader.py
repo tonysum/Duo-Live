@@ -15,7 +15,7 @@ import resource
 import signal
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from rich.console import Console
 
@@ -44,6 +44,7 @@ class LiveTrader:
         config: Optional[LiveTradingConfig] = None,
         verbose: bool = True,
         strategy: Optional[Strategy] = None,
+        extra_strategies: Optional[list[Strategy]] = None,
     ):
         self.config = config or LiveTradingConfig()
         self.verbose = verbose
@@ -57,33 +58,46 @@ class LiveTrader:
         if strategy is None:
             raise ValueError("strategy is required")
         self.strategy = strategy
+        extras = list(extra_strategies or [])
+        self._strategies_ordered: list[Strategy] = [self.strategy] + extras
 
-        # Strategy config shortcut
+        # Strategy config shortcut (primary — API /dashboard rolling snapshot)
         self.rolling_config = getattr(self.strategy, 'config', None)
 
-        # Multi-strategy: id → Strategy (single-process; extend __main__ to add more)
-        sk = strategy_registry_key(self.strategy)
-        self._strategy_registry: dict[str, Strategy] = {sk: self.strategy}
+        # Multi-strategy: id → Strategy
+        reg: dict[str, Strategy] = {}
+        for s in self._strategies_ordered:
+            sk = strategy_registry_key(s)
+            if sk in reg:
+                raise ValueError(
+                    f"Duplicate strategy_id {sk!r} — use unique id per config.strategies slot",
+                )
+            reg[sk] = s
+        self._strategy_registry = reg
 
         # Shared Binance client
         self.client = BinanceFuturesClient()
 
-        # Signal queue (scanner → executor)
+        # Signal queue (all scanners fan-in → executor)
         self.signal_queue: asyncio.Queue = asyncio.Queue()
 
         # Persistence (signal events + live trades)
         self.store = TradeStore(self.config.db_path)
-        # Inject store into strategy for cooldown checks
-        if hasattr(self.strategy, '_store'):
-            self.strategy._store = self.store
+        for s in self._strategies_ordered:
+            if hasattr(s, '_store'):
+                s._store = self.store
 
-        # Scanner — delegated to strategy
-        self.scanner = self.strategy.create_scanner(
-            config=self.config,
-            signal_queue=self.signal_queue,
-            client=self.client,
-            console=self.console,
-        )
+        # Scanners — one per strategy, shared queue
+        self.scanners: list[Any] = [
+            s.create_scanner(
+                config=self.config,
+                signal_queue=self.signal_queue,
+                client=self.client,
+                console=self.console,
+            )
+            for s in self._strategies_ordered
+        ]
+        self.scanner = self.scanners[0]
 
         # Notifier
         self.notifier = TelegramNotifier()
@@ -103,8 +117,7 @@ class LiveTrader:
             store=self.store,
             strategy=self.strategy,
             strategy_registry=self._strategy_registry,
-            # S: after every SL exit, block same-day re-entry for that symbol
-            on_sl_triggered=self.scanner.add_sl_cooldown,
+            on_sl_triggered=self._dispatch_sl_cooldown,
         )
 
         # WebSocket user data stream (real-time fills)
@@ -119,6 +132,22 @@ class LiveTrader:
             chat_id=self.notifier.chat_id if self.notifier else os.getenv("TELEGRAM_CHAT_ID", ""),
             trader=self,
         )
+
+    def _dispatch_sl_cooldown(self, symbol: str, strategy_id: str = "") -> None:
+        """After SL, cooldown only the scanner that owns ``strategy_id`` (if known)."""
+        for sc in self.scanners:
+            sc_sid = getattr(sc, '_strategy_id', None)
+            if (
+                isinstance(sc_sid, str)
+                and sc_sid
+                and isinstance(strategy_id, str)
+                and strategy_id
+                and sc_sid != strategy_id
+            ):
+                continue
+            fn = getattr(sc, 'add_sl_cooldown', None)
+            if callable(fn):
+                fn(symbol)
 
     async def start(self):
         """Start all sub-services concurrently."""
@@ -143,7 +172,7 @@ class LiveTrader:
                     await self._print_banner()
 
                 tasks = [
-                    self.scanner.run_forever(),
+                    *[sc.run_forever() for sc in self.scanners],
                     self._process_signals(),
                     self.live_monitor.run_forever(),
                     self._daily_pnl_report(),
@@ -237,13 +266,14 @@ class LiveTrader:
                     "📡 %d 个信号进入待执行池 (10s延迟)...", len(pending),
                 )
                 for s in pending:
+                    _sig_sid = signal_strategy_id(s)
                     self.console.print(
-                        f"  [dim]• {s.symbol} surge={s.surge_ratio:.1f}x "
+                        f"  [dim]• [{_sig_sid}] {s.symbol} surge={s.surge_ratio:.1f}x "
                         f"signal_price={s.price:.6f}[/dim]"
                     )
                     logger.info(
-                        "  • %s surge=%.1fx signal_price=%.6f",
-                        s.symbol, s.surge_ratio, s.price,
+                        "  • [%s] %s surge=%.1fx signal_price=%.6f",
+                        _sig_sid, s.symbol, s.surge_ratio, s.price,
                     )
 
                 # Wait 10 seconds before executing entries
@@ -270,7 +300,10 @@ class LiveTrader:
                 filtered = []
                 for s in pending:
                     if s.symbol in open_symbols:
-                        logger.info("⏭️ Skip %s: already in position", s.symbol)
+                        logger.info(
+                            "⏭️ [%s] Skip %s: already in position",
+                            signal_strategy_id(s), s.symbol,
+                        )
                         self.store.save_signal_event(SignalEvent(
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
@@ -286,7 +319,10 @@ class LiveTrader:
                     for s in filtered:
                         reason = (f"max positions reached ({open_count} exchange"
                                   f" ≥ {self.config.max_positions})")
-                        logger.info("⏭️ Skip %s: %s", s.symbol, reason)
+                        logger.info(
+                            "⏭️ [%s] Skip %s: %s",
+                            signal_strategy_id(s), s.symbol, reason,
+                        )
                         self.store.save_signal_event(SignalEvent(
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
@@ -300,7 +336,10 @@ class LiveTrader:
                         reason = (f"max positions reached ({open_count} exchange"
                                   f" + {available_slots} slots used"
                                   f" ≥ {self.config.max_positions})")
-                        logger.info("⏭️ Skip %s: %s", s.symbol, reason)
+                        logger.info(
+                            "⏭️ [%s] Skip %s: %s",
+                            signal_strategy_id(s), s.symbol, reason,
+                        )
                         self.store.save_signal_event(SignalEvent(
                             timestamp=now_ts.isoformat(), symbol=s.symbol,
                             surge_ratio=s.surge_ratio, price=str(s.price),
@@ -384,7 +423,10 @@ class LiveTrader:
             combined_count = len(open_symbols | pending)
 
             if symbol in combined_symbols:
-                logger.info("⏭️ Skip %s: already in position (exchange/pending)", symbol)
+                logger.info(
+                    "⏭️ [%s] Skip %s: already in position (exchange/pending)",
+                    sid, symbol,
+                )
                 self.store.save_signal_event(SignalEvent(
                     timestamp=now.isoformat(), symbol=symbol,
                     surge_ratio=signal.surge_ratio, price=str(signal.price),
@@ -395,7 +437,7 @@ class LiveTrader:
             if combined_count >= self.config.max_positions:
                 reason = (f"max positions reached ({len(open_pos)} exchange"
                           f" + {len(pending)} pending ≥ {self.config.max_positions})")
-                logger.info("⏭️ Skip %s: %s", symbol, reason)
+                logger.info("⏭️ [%s] Skip %s: %s", sid, symbol, reason)
                 self.store.save_signal_event(SignalEvent(
                     timestamp=now.isoformat(), symbol=symbol,
                     surge_ratio=signal.surge_ratio, price=str(signal.price),
@@ -412,7 +454,7 @@ class LiveTrader:
             ticker = await self.client.get_ticker_price(symbol)
             entry_price = ticker.price
         except Exception as e:
-            logger.warning("Failed to get price for %s: %s", symbol, e)
+            logger.warning("[%s] Failed to get price for %s: %s", sid, symbol, e)
             self.store.save_signal_event(SignalEvent(
                 timestamp=now.isoformat(), symbol=symbol,
                 surge_ratio=signal.surge_ratio, price=str(signal.price),
@@ -451,7 +493,7 @@ class LiveTrader:
         if self.config.daily_loss_limit_usdt > 0:
             try:
                 daily_pnl = await self.client.get_daily_realized_pnl()
-                logger.info("📊 今日已实现盈亏: %s USDT", daily_pnl)
+                logger.info("[%s] 📊 今日已实现盈亏: %s USDT", sid, daily_pnl)
                 if daily_pnl <= -self.config.daily_loss_limit_usdt:
                     reason = f"daily loss limit ({daily_pnl} ≤ -{self.config.daily_loss_limit_usdt})"
                     self.console.print(
@@ -459,8 +501,8 @@ class LiveTrader:
                         f" — 停止开新仓[/red]"
                     )
                     logger.warning(
-                        "每日亏损限额触发: %s USDT, 限额 %s USDT",
-                        daily_pnl, self.config.daily_loss_limit_usdt,
+                        "[%s] 每日亏损限额触发: %s USDT, 限额 %s USDT",
+                        sid, daily_pnl, self.config.daily_loss_limit_usdt,
                     )
                     self.store.save_signal_event(SignalEvent(
                         timestamp=now.isoformat(), symbol=symbol,
@@ -483,14 +525,14 @@ class LiveTrader:
                 available = Decimal(str(account_info.get("availableBalance", "0")))
                 margin = available * Decimal(str(self.config.margin_pct)) / Decimal("100")
                 margin = max(margin, Decimal("1"))  # 最少 1 USDT
-                logger.info("百分比保证金: %.2f USDT (%.1f%% of %.2f)",
-                            margin, self.config.margin_pct, available)
+                logger.info("[%s] 百分比保证金: %.2f USDT (%.1f%% of %.2f)",
+                            sid, margin, self.config.margin_pct, available)
             except Exception as e:
-                logger.warning("获取余额失败, 降级为固定保证金: %s", e)
+                logger.warning("[%s] 获取余额失败, 降级为固定保证金: %s", sid, e)
                 margin = self.config.live_fixed_margin_usdt
         else:
             margin = self.config.live_fixed_margin_usdt
-            logger.info("固定保证金: %s USDT", margin)
+            logger.info("[%s] 固定保证金: %s USDT", sid, margin)
         quantity = margin * self.config.leverage / entry_price
 
         # ── Place live order ────────────────────────────────────
@@ -544,7 +586,7 @@ class LiveTrader:
                     f"  [red]LIVE ORDER FAILED[/red] {symbol}: {order_result['error']}"
                 )
         except Exception as e:
-            logger.error("实盘下单失败 %s: %s", symbol, e, exc_info=True)
+            logger.error("[%s] 实盘下单失败 %s: %s", sid, symbol, e, exc_info=True)
             return False
 
         return True  # order was placed
