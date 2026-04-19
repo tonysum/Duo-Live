@@ -1,11 +1,8 @@
-"""Rolling Live Strategy — Moonshot-R24 implementation of Strategy ABC.
-
-Plugs into LiveTrader to replace SurgeShortStrategy with 24h rolling
-top gainer short strategy.
+"""Rolling Live Strategy — R24 raw-surge implementation of Strategy ABC.
 
 Decision points:
-  1. create_scanner()        → RollingLiveScanner (24hr ticker based)
-  2. filter_entry()          → main profit check + listing date filter
+  1. create_scanner()        → RollingLiveScanner（raw 涨幅 + 卖量比 + select_signals）
+  2. filter_entry()          → 冷却 + 上市天数（无主力获利门控）
   3. evaluate_position()     → trailing stop + time-based TP + max hold
 """
 
@@ -34,10 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 class RollingLiveStrategy(Strategy):
-    """Moonshot-R24 — 24h rolling top gainer short strategy for live trading.
+    """R24 raw-surge — 24h ticker + 小时卖量暴涨比 + 上市过滤；不做主力获利门控。
 
-    Signal:  24h rolling price change top N (via Binance 24hr Ticker)
-    Entry:   SHORT with main profit check + listing date filter
     TP/SL:   time-decaying TP, fixed SL, trailing stop
     Exit:    max hold time, trailing stop bounce
     """
@@ -80,7 +75,7 @@ class RollingLiveStrategy(Strategy):
         now: datetime,
         config: LiveTradingConfig,
     ) -> EntryDecision:
-        """Run R24 entry checks: listing date + main profit check."""
+        """Run R24 entry checks: cooldown + listing date (no main-profit gate)."""
 
         symbol = signal.symbol
         pct_chg = signal.surge_ratio  # reused field
@@ -148,47 +143,6 @@ class RollingLiveStrategy(Strategy):
                 logger.info(
                     "[%s]   ⚠️ 上市日期: %s 无法获取 (跳过检查)",
                     rid, symbol,
-                )
-
-        # ── 2. Main profit check ───────────────────────────────
-        if self.config.enable_main_profit_check:
-            try:
-                avg_price = await self._get_30d_avg_price(client, symbol)
-                yesterday_close = await self._get_yesterday_close(client, symbol, now)
-
-                if avg_price and avg_price > 0 and yesterday_close and yesterday_close > 0:
-                    from_avg_pct = (yesterday_close - avg_price) / avg_price * 100
-                    threshold = self._get_main_profit_threshold(pct_chg)
-
-                    if from_avg_pct < threshold:
-                        logger.info(
-                            "[%s]   ❌ 主力未获利: %s 距30d均价 %.1f%% < 阈值 %d%% "
-                            "(30d均价=%.6f, 昨收=%.6f)",
-                            rid, symbol, from_avg_pct, threshold,
-                            avg_price, yesterday_close,
-                        )
-                        return EntryDecision(
-                            should_enter=False,
-                            reject_reason=(
-                                f"主力未获利: 距30d均价 {from_avg_pct:.1f}% "
-                                f"< 阈值 {threshold}%"
-                            ),
-                        )
-                    logger.info(
-                        "[%s]   ✅ 主力获利: %s 距30d均价 +%.1f%% ≥ 阈值 %d%% "
-                        "(30d均价=%.6f, 昨收=%.6f)",
-                        rid, symbol, from_avg_pct, threshold,
-                        avg_price, yesterday_close,
-                    )
-                else:
-                    logger.info(
-                        "[%s]   ⚠️ 主力获利: %s 数据不足 (30d均价=%s, 昨收=%s, 跳过检查)",
-                        rid, symbol, avg_price, yesterday_close,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s]   ⚠️ 主力获利检查异常 %s (fail-open): %s",
-                    rid, symbol, e,
                 )
 
         # ── All checks passed ──────────────────────────────────
@@ -315,13 +269,6 @@ class RollingLiveStrategy(Strategy):
 
     # ── Helpers ────────────────────────────────────────────────────
 
-    def _get_main_profit_threshold(self, pct_chg: float) -> float:
-        """Get profit threshold based on surge percentage."""
-        for max_pct, threshold in self.config.main_profit_thresholds:
-            if pct_chg < max_pct:
-                return threshold
-        return self.config.main_profit_thresholds[-1][1]
-
     async def _get_listing_date(
         self, client: BinanceFuturesClient, symbol: str,
     ) -> Optional[datetime]:
@@ -342,44 +289,6 @@ class RollingLiveStrategy(Strategy):
             logger.debug("获取 %s 上市日期失败: %s", symbol, e)
         self._listing_cache[symbol] = None
         return None
-
-    async def _get_30d_avg_price(
-        self, client: BinanceFuturesClient, symbol: str,
-    ) -> Optional[float]:
-        """Get 30-day average closing price."""
-        try:
-            klines = await client.get_klines(
-                symbol=symbol, interval="1d", limit=31,
-            )
-            if len(klines) < 2:
-                return None
-            closes = [float(k.close) for k in klines[:-1]]  # exclude today
-            return sum(closes) / len(closes) if closes else None
-        except Exception as e:
-            logger.debug("获取 %s 30d均价失败: %s", symbol, e)
-            return None
-
-    async def _get_yesterday_close(
-        self, client: BinanceFuturesClient, symbol: str, now: datetime,
-    ) -> Optional[float]:
-        """Get yesterday's daily close price."""
-        try:
-            yesterday = now - timedelta(days=1)
-            day_start_ms = int(
-                yesterday.replace(
-                    hour=0, minute=0, second=0, microsecond=0,
-                ).timestamp() * 1000,
-            )
-            klines = await client.get_klines(
-                symbol=symbol, interval="1d",
-                start_time=day_start_ms,
-                end_time=day_start_ms + 86_400_000,
-                limit=1,
-            )
-            return float(klines[0].close) if klines else None
-        except Exception as e:
-            logger.debug("获取 %s 昨日收盘价失败: %s", symbol, e)
-            return None
 
 
 def merged_rolling_configs_from_live_config(

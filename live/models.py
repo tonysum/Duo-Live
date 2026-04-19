@@ -36,6 +36,9 @@ class SurgeSignal:
     note: str = ""
     #: Logical strategy that produced this signal (multi-strategy dispatch).
     strategy_id: str = "r24"
+    #: R24 raw-surge：当前小时卖量倍数（可选，用于日志/排障）
+    sell_surge_ratio: float | None = None
+    yesterday_avg_hour_sell_quote: float | None = None
 
     @property
     def signal_time(self) -> str:

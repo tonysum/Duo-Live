@@ -6,6 +6,7 @@ import {
   LiveTrade,
   Config,
   RollingRuntimeParams,
+  QuotasResponse,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
@@ -22,6 +23,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react"
 import { Link } from "react-router-dom"
+import { StrategyQuotaCard } from "@/components/StrategyQuotaCard"
 
 function ParamRow({ label, value }: { label: string; value: string }) {
   return (
@@ -53,8 +55,20 @@ function RollingRuntimeBlock({ rolling }: { rolling: RollingRuntimeParams }) {
         </h4>
         <ParamRow label="Top N" value={String(rolling.top_n)} />
         <ParamRow
-          label="24h 涨幅阈值"
+          label="Raw 24h 涨幅"
+          value={`≥ ${rolling.raw_min_pct_chg}%`}
+        />
+        <ParamRow
+          label="Raw 卖量比"
+          value={`> ${rolling.raw_min_sell_surge}`}
+        />
+        <ParamRow
+          label="策略层涨幅"
           value={`≥ ${rolling.min_pct_chg}%`}
+        />
+        <ParamRow
+          label="整点后延迟"
+          value={`${rolling.scan_delay_minutes}m`}
         />
         <ParamRow
           label="扫描间隔"
@@ -182,6 +196,7 @@ export default function Content() {
   const [positions, setPositions] = useState<Position[]>([])
   const [trades, setTrades] = useState<LiveTrade[]>([])
   const [runtimeCfg, setRuntimeCfg] = useState<Config | null>(null)
+  const [quotas, setQuotas] = useState<QuotasResponse | null>(null)
   const [error, setError] = useState("")
 
   const fetchData = async () => {
@@ -200,6 +215,13 @@ export default function Content() {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to fetch data"
       setError(message)
+    }
+    // Quotas are optional (single-strategy backend may not have this endpoint)
+    try {
+      const q = await api.getQuotas()
+      setQuotas(q)
+    } catch {
+      // Silently ignore — section simply won't render
     }
   }
 
@@ -283,6 +305,29 @@ export default function Content() {
           sub={`${status?.open_positions || 0} open positions`}
         />
       </div>
+
+      {/* Strategy Quotas Section */}
+      {quotas && quotas.total_strategies > 0 && (
+        <div className="bg-white dark:bg-[#0F0F12] rounded-xl border border-gray-200 dark:border-[#1F1F23] overflow-hidden">
+          <div className="p-4 border-b border-zinc-100 dark:border-zinc-800">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              Strategy Quotas
+              <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                ({quotas.total_strategies})
+              </span>
+            </h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+              Real-time resource allocation per strategy
+            </p>
+          </div>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {Object.values(quotas.quotas).map((quota) => (
+              <StrategyQuotaCard key={quota.strategy_id} quota={quota} />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Current Positions */}
@@ -537,6 +582,10 @@ export default function Content() {
               <ParamRow
                 label="持仓监控间隔"
                 value={`${runtimeCfg.monitor_interval_seconds}s`}
+              />
+              <ParamRow
+                label="模拟盘 paper_trading"
+                value={runtimeCfg.paper_trading ? "开（不真实下单）" : "关"}
               />
               <ParamRow
                 label="配置声明 strategies"

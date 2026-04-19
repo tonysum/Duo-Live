@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { api, Config } from "@/lib/api"
+import { api, Config, StrategiesResponse } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
 import {
@@ -8,7 +8,11 @@ import {
     Save,
     Loader2,
     RotateCcw,
+    SlidersHorizontal,
+    CheckCircle2,
+    XCircle,
 } from "lucide-react"
+import { StrategyQuotaCard } from "@/components/StrategyQuotaCard"
 
 /** Keys editable on Settings (subset of Config — excludes rolling snapshot). */
 type SettingsNumericKey =
@@ -90,12 +94,24 @@ const FIELDS: FieldConfig[] = [
     },
 ]
 
+/** Config param row label+value */
+function ConfigParamRow({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="flex justify-between gap-3 text-xs py-1 border-b border-zinc-100 dark:border-zinc-800/80 last:border-0">
+            <span className="text-zinc-500 dark:text-zinc-400 shrink-0">{label}</span>
+            <span className="font-mono text-zinc-900 dark:text-zinc-100 text-right">{value}</span>
+        </div>
+    )
+}
+
 export default function SettingsPage() {
     const [config, setConfig] = useState<Config | null>(null)
     const [draft, setDraft] = useState<SettingsDraft>({})
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState("")
     const [success, setSuccess] = useState("")
+    const [strategies, setStrategies] = useState<StrategiesResponse | null>(null)
+    const [strategiesError, setStrategiesError] = useState("")
 
     useEffect(() => {
         api
@@ -115,6 +131,22 @@ export default function SettingsPage() {
             .catch((err) => {
                 setError(err instanceof Error ? err.message : "Failed to load config")
             })
+    }, [])
+
+    // Fetch and poll strategies every 5s
+    useEffect(() => {
+        const fetchStrategies = async () => {
+            try {
+                const data = await api.getStrategies()
+                setStrategies(data)
+                setStrategiesError("")
+            } catch (err: unknown) {
+                setStrategiesError(err instanceof Error ? err.message : "Failed to load strategies")
+            }
+        }
+        void fetchStrategies()
+        const iv = setInterval(fetchStrategies, 5000)
+        return () => clearInterval(iv)
     }, [])
 
     const handleChange = (key: SettingsNumericKey, value: string) => {
@@ -322,6 +354,111 @@ export default function SettingsPage() {
                         重置
                     </button>
                 </div>
+
+                {/* Strategy Configuration Section */}
+                {strategies && strategies.total > 0 && (
+                    <div
+                        className={cn(
+                            "bg-white dark:bg-zinc-900/70",
+                            "border border-zinc-100 dark:border-zinc-800",
+                            "rounded-xl shadow-sm backdrop-blur-xl",
+                            "overflow-hidden"
+                        )}
+                    >
+                        <div className="px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
+                            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                                <SlidersHorizontal className="w-3.5 h-3.5" />
+                                Strategy Configuration
+                                <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                                    ({strategies.total})
+                                </span>
+                            </h2>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                                各策略的参数配置与实时配额（只读，修改请编辑 data/config.json）
+                            </p>
+                        </div>
+
+                        {strategiesError && (
+                            <div className="mx-5 mt-4 flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+                                <AlertCircle className="w-4 h-4 text-red-500" />
+                                <span className="text-sm text-red-600 dark:text-red-400">{strategiesError}</span>
+                            </div>
+                        )}
+
+                        <div className="p-5 space-y-4">
+                            {strategies.strategies.map((s) => (
+                                <div
+                                    key={s.id}
+                                    className={cn(
+                                        "rounded-lg border",
+                                        s.enabled
+                                            ? "border-zinc-200 dark:border-zinc-700"
+                                            : "border-zinc-100 dark:border-zinc-800 opacity-60",
+                                        "overflow-hidden"
+                                    )}
+                                >
+                                    {/* Strategy Header */}
+                                    <div className={cn(
+                                        "px-4 py-3 flex items-center justify-between",
+                                        "bg-zinc-50/80 dark:bg-zinc-800/40",
+                                        "border-b border-zinc-100 dark:border-zinc-800"
+                                    )}>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                                {s.id}
+                                            </span>
+                                            <span className={cn(
+                                                "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium",
+                                                "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
+                                            )}>
+                                                {s.kind}
+                                            </span>
+                                        </div>
+                                        <span className={cn(
+                                            "inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full",
+                                            s.enabled
+                                                ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
+                                                : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                        )}>
+                                            {s.enabled ? (
+                                                <CheckCircle2 className="w-3 h-3" />
+                                            ) : (
+                                                <XCircle className="w-3 h-3" />
+                                            )}
+                                            {s.enabled ? "Enabled" : "Disabled"}
+                                        </span>
+                                    </div>
+
+                                    {/* Strategy Body: Config + Quota */}
+                                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {/* Config Parameters */}
+                                        <div className="space-y-1">
+                                            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-2">
+                                                Parameters
+                                            </h4>
+                                            <ConfigParamRow label="扫描间隔" value={`${s.config.scan_interval_hours}h`} />
+                                            <ConfigParamRow label="Top N" value={String(s.config.top_n)} />
+                                            <ConfigParamRow label="最小涨幅" value={`${s.config.min_pct_chg}%`} />
+                                            <ConfigParamRow label="初始止盈" value={`${s.config.tp_initial}%`} />
+                                            <ConfigParamRow label="止损阈值" value={`${s.config.sl_threshold}%`} />
+                                            <ConfigParamRow label="最大持仓" value={String(s.config.max_positions)} />
+                                            <ConfigParamRow label="每仓保证金" value={`${s.config.margin_per_position} USDT`} />
+                                            <ConfigParamRow label="每日亏损限额" value={`${s.config.daily_loss_limit} USDT`} />
+                                        </div>
+
+                                        {/* Quota Card */}
+                                        <div>
+                                            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-2">
+                                                Real-time Quota
+                                            </h4>
+                                            <StrategyQuotaCard quota={s.quota} compact />
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
         </Layout>
     )

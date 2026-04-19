@@ -1,8 +1,9 @@
-# Duo-Live — Binance U 本位合约实盘（R24）
+# Duo-Live — Binance U 本位合约实盘（R24 raw-surge）
 
-基于 **Binance USDS-M Futures** 的自动化交易：`Rolling R24` 策略按 **24h 涨跌幅** 扫描全市场 USDT 永续，在满足条件时 **做空** 入场；入场后由 `LiveOrderExecutor` 与 `LivePositionMonitor` 管理 TP/SL（条件单）、时间阶梯止盈、追踪止损、加仓与最大持仓天数；并提供 **FastAPI 面板 API**、**Vite + React 看板**、**Telegram 通知 / Bot** 与 **可选邮件告警**。
+基于 **Binance USDS-M Futures** 的自动化交易：**R24 raw-surge** 按 **24h 涨跌幅** 与 **卖量暴涨比** 扫描全市场 USDT 永续，在满足条件时 **做空** 入场；入场后由 `LiveOrderExecutor` 与 `LivePositionMonitor` 管理 TP/SL（条件单）、时间阶梯止盈、追踪止损、可选加仓与最大持仓天数；并提供 **FastAPI 面板 API**、**Vite + React 看板**、**Telegram 通知 / Bot** 与 **可选邮件告警**。
 
-> 默认策略为 **RollingLiveStrategy（R24）**，不再使用历史上的「卖量暴涨 / SurgeShort」扫描与独立 `risk_filters` 模块。
+> **实现范围**：策略、扫描与筛选逻辑均在仓库 `live/` 内（`rolling_live_strategy.py`、`rolling_scanner.py`、`raw_surge_signal.py` 等），**运行时不 import 其他本地仓库**；与 duo-moonshot paper 的 R24 raw-surge **语义对齐**，为独立实现。  
+> 默认策略为 **RollingLiveStrategy（R24）**，不再使用历史上的「SurgeShort」扫描与独立 `risk_filters` 模块。
 
 ---
 
@@ -34,16 +35,19 @@
 
 ## 系统特点
 
-### 信号（R24 扫描）
+### 信号（R24 raw-surge 扫描）
 
-- 使用 **全市场 `/fapi/v1/ticker/24hr` 单次拉取**，按 **24h 涨幅百分比** 筛选（默认 ≥ `min_pct_chg`），取 **Top N**（`top_n`）。
-- 按 **`scan_interval_hours`** 在 UTC 整点附近对齐扫描（启动时会立刻扫一次）。
-- 复用 `SurgeSignal`：`surge_ratio` 字段存放 **24h 涨跌幅百分比**（非卖量比）。
+- **全市场 `/fapi/v1/ticker/24hr`** 拉取后，按 **`raw_min_pct_chg`** 取候选，再取 **Top N**（`top_n`）。
+- 对每个候选计算 **小时主动卖量 quote / 昨日日均每小时卖量**（`sell_surge_ratio_at_hour`），必须 **>** **`raw_min_sell_surge`**（与 paper `RawSurgeScanner` 一致）。
+- 再经 **`select_raw_surge_signals`**：`min_pct_chg`、上市天数、可选二次卖量门控（`enable_sell_surge_gate` 等）。
+- 按 **`scan_interval_hours`** 与 **`scan_delay_minutes`**（UTC 整点后延迟）对齐扫描；**启动时立刻扫一次**。
+- `SurgeSignal.surge_ratio` 仍为 **24h 涨跌幅 %**；`sell_surge_ratio` / `yesterday_avg_hour_sell_quote` 可选记录卖量信息。
 - **同币种信号冷却**：`signal_cooldown_hours`；**止损当日** 同一标的可经 `add_sl_cooldown` 屏蔽再入场。
 
 ### 交易与风控（基础设施层）
 
-- **自动交易开关**：默认关闭；需 `python -m live run --auto-trade` 或在前端打开，才会对信号真实下单。
+- **模拟盘 `paper_trading`**：在 [`data/config.json`](data/config.json) 设 `"paper_trading": true`（或 `POST /api/config`）后重启进程。仍用真实行情与策略过滤/配额，**不向交易所下开仓单**；信号与模拟成交写入 SQLite（`live_trades.is_paper=1`、`paper_positions` 表）。模拟平仓由 `PaperTradingLoop` 按标记价 + `evaluate_position` + 价格触及 TP/SL 驱动。**注意**：`paper_trading` 在进程启动时初始化；改配置需重启 trader。模拟盘可不依赖「自动交易」开关即可尝试入场；实盘下单仍须 `auto_trade` 且 `paper_trading=false`。
+- **自动交易开关**：默认关闭；需 `python -m live run --auto-trade` 或在前端打开，才会对信号**真实**下单（且 `paper_trading` 须为 false）。
 - **仓位与资金**：`max_positions`、`max_entries_per_day`、`daily_loss_limit_usdt`；单笔保证金 `live_fixed_margin_usdt` 或 `margin_mode` + `margin_pct`。
 - **队列侧批量**：信号先入队，消费端 **合并当前队列 + 等待 10s**，再按涨幅排序、按空余槽位 **串行** 尝试入场。
 
@@ -94,9 +98,12 @@ duo-live/
 │   ├── __main__.py              # CLI：run / status / order / close …
 │   ├── trader.py                # LiveTrader 编排
 │   ├── strategy.py              # Strategy ABC，EntryDecision / PositionAction
-│   ├── rolling_live_strategy.py # RollingLiveStrategy（R24）
-│   ├── rolling_scanner.py       # RollingLiveScanner（24h 涨幅扫描）
+│   ├── rolling_live_strategy.py # RollingLiveStrategy（R24 raw-surge）
+│   ├── rolling_scanner.py       # RollingLiveScanner（raw-surge 扫描）
+│   ├── raw_surge_signal.py      # select_raw_surge_signals（与 paper 语义等价）
+│   ├── sell_surge_binance.py    # 卖量暴涨比（REST/K 线）
 │   ├── rolling_config.py        # RollingLiveConfig；从 data/config.json 的 rolling 读取
+│   ├── strategy_factory.py      # 按 config.strategies[].kind 构造策略（当前 rolling）
 │   ├── live_config.py           # LiveTradingConfig；data/config.json
 │   ├── live_executor.py         # 下单、TP/SL 条件单
 │   ├── live_position_monitor.py # 持仓与条件单生命周期
@@ -118,8 +125,8 @@ duo-live/
 
 | 模块 | 职责 |
 |------|------|
-| `RollingLiveScanner` | 24h 涨幅筛选、Top N、冷却、入队 |
-| `RollingLiveStrategy` | 主力获利/新币天数/冷却、`evaluate_position` TP·SL·加仓·追踪 |
+| `RollingLiveScanner` | `raw_min_pct_chg` → Top N → 卖量比 → `select_raw_surge_signals`，冷却、入队 |
+| `RollingLiveStrategy` | 新币天数、信号冷却（无主力获利门控）、`evaluate_position` TP·SL·加仓·追踪 |
 | `LiveTrader` | 扫描、消费信号、监控、WS、API、Bot、日报 |
 | `LivePositionMonitor` | 入场后 TP/SL、补单、方向修正、`recover_positions` |
 | `api.py` | `/api/*`、`/ws/live` 等与看板对接 |
@@ -128,9 +135,9 @@ duo-live/
 
 ## 信号与入场流程
 
-1. **扫描**：`RollingLiveScanner` 请求 24hr ticker → 过滤 `min_pct_chg` → 排序取 `top_n` → `SurgeSignal` 入队。  
+1. **扫描**：`RollingLiveScanner` 请求 24hr ticker → **`raw_min_pct_chg`** 候选 → 排序取 **`top_n`** → 每币卖量比 **`> raw_min_sell_surge`** → **`select_raw_surge_signals`**（`min_pct_chg`、上市天数、可选 `enable_sell_surge_gate`）→ `SurgeSignal` 入队。  
 2. **消费**：`_process_signals` 合并队列 → **等待 10s** → 拉取交易所持仓 → 去掉已持仓品种 → 按 `max_positions` 截断 → **仅当 `auto_trade_enabled`** 时对每条信号调用执行逻辑。  
-3. **过滤**：`RollingLiveStrategy.filter_entry`（主力获利区间、上市天数、`TradeStore` 信号冷却等）→ `EntryDecision`（默认 SHORT，TP/SL 百分比来自 `tp_initial`×100、`sl_threshold`×100）。  
+3. **过滤**：`RollingLiveStrategy.filter_entry`（上市天数、`TradeStore` 信号冷却；**raw-surge 路径不做主力获利门控**）→ `EntryDecision`（默认 SHORT，TP/SL 百分比来自 `tp_initial`×100、`sl_threshold`×100）。  
 4. **下单**：`LiveOrderExecutor` 等路径挂限价单；监控跟踪 `deferred_tp_sl`，成交后挂条件止盈止损。
 
 ---
@@ -139,32 +146,39 @@ duo-live/
 
 ### 代码默认（`RollingLiveConfig`）
 
+以下为 **`rolling_config.RollingLiveConfig` 数据类默认值**（未改 JSON 时生效）。实际以代码为准。
+
 | 字段 | 默认 | 含义 |
 |------|------|------|
-| `top_n` | 1 | 每次扫描取涨幅前 N |
-| `min_pct_chg` | 10.0 | 最小 24h 涨幅% |
+| `strategy_id` | `"r24"` | 策略标识（多路 `strategies[]` 下常覆盖） |
+| `top_n` | 5 | raw 候选后取涨幅前 N |
+| `raw_min_pct_chg` | 10.0 | 24h ticker 最小涨幅%（第一层） |
+| `raw_min_sell_surge` | 10.0 | 卖量比须 **>** 该值 |
+| `min_pct_chg` | 5.0 | `select_raw_surge_signals` 内二次涨幅门槛 |
 | `min_listed_days` | 10 | 上市天数过滤 |
-| `signal_cooldown_hours` | 24 | 同币种信号间隔 |
-| `scan_interval_hours` | 1 | 扫描间隔（小时） |
-| `max_hold_days` | 11 | 最大持仓天数 |
-| `tp_initial` / `tp_reduced` | 0.34 / 0.14 | 阶梯止盈（比例，非百分比数字） |
-| `tp_hours_threshold` | 10 | 满 N 小时后切换为 `tp_reduced` |
-| `tp_after_add` | 0.45 | 加仓后止盈比例 |
-| `sl_threshold` | 0.44 | 止损比例 |
-| `trailing_activation_pct` / `trailing_distance_pct` | 0.16 / 0.09 | 追踪止损 |
-| `enable_add_position` / `add_position_threshold` | true / 0.36 | 加仓 |
+| `signal_cooldown_hours` | 8 | 同币种信号间隔 |
+| `scan_interval_hours` | 2 | 扫描间隔（小时） |
+| `max_hold_days` | 7 | 最大持仓天数 |
+| `tp_initial` / `tp_reduced` | 0.16 / 0.08 | 阶梯止盈（**小数比例**，如 0.16≈16%） |
+| `tp_hours_threshold` | 6 | 满 N 小时后切换为 `tp_reduced` |
+| `tp_after_add` | 0.46 | 加仓后止盈比例 |
+| `sl_threshold` | 0.42 | 止损比例 |
+| `trailing_activation_pct` / `trailing_distance_pct` | 0.08 / 0.04 | 追踪止损 |
+| `enable_add_position` / `add_position_threshold` | true / 0.2 | 逆势加仓 |
 
-策略数值（上表中的 `top_n`、`min_pct_chg`、`tp_initial` 等）写在 **`data/config.json`** 的 **`"rolling"`** 对象里；与资金相关的可变项写在同一文件的顶层（`leverage`、`max_positions` 等）。加载逻辑见 `rolling_config.load_rolling_from_config_json` 与 `LiveTradingConfig.load_from_file`。
+策略数值写在 **`data/config.json`** 的 **`"rolling"`** 中；资金与杠杆写在**顶层**。加载见 `rolling_config.load_rolling_from_config_json` 与 `LiveTradingConfig.load_from_file`。
+
+**仓库内示例**：当前 [`data/config.json`](data/config.json) 为 **r24_raw_surge** 参数集（与 paper 优化/概念对齐的一版快照）；多策略槽位示例见 [`data/config.dual-strategy.EXAMPLE.json`](data/config.dual-strategy.EXAMPLE.json)。
 
 ### `data/config.json`
 
-**顶层**（`LiveTradingConfig`，API/前端可写）：
+**顶层**（`LiveTradingConfig`，API/前端可写部分见 `MUTABLE_FIELDS`）：
 
-| 字段 | 默认 | 含义 |
-|------|------|------|
-| `leverage` | 2 | 杠杆 |
-| `max_positions` | 7 | 最大持仓数 |
-| `max_entries_per_day` | 2 | 每日开仓次数上限 |
+| 字段 | 代码默认 | 含义 |
+|------|----------|------|
+| `leverage` | 3 | 杠杆 |
+| `max_positions` | 8 | 全局最大持仓数（与策略配额协同） |
+| `max_entries_per_day` | 8 | 每日开仓次数上限 |
 | `live_fixed_margin_usdt` | 5 | 固定保证金（USDT/笔） |
 | `daily_loss_limit_usdt` | 50 | 日亏限额（0 不限） |
 | `margin_mode` | fixed | fixed / percent |
@@ -172,11 +186,15 @@ duo-live/
 
 `monitor_interval_seconds` 等仅在代码默认值中配置，不写入 JSON。
 
-**`"rolling"`**（可选）：与上表「代码默认（RollingLiveConfig）」同名字段，用于覆盖 R24 扫描与止盈止损参数；缺少的字段沿用代码默认。
+**`"rolling"`**：覆盖 `RollingLiveConfig` 字段（扫描、raw-surge、TP/SL、追踪止损等）。
+
+**`"strategies"`**（可选）：多策略清单。每项含 `id`、`kind`（当前仅 **`rolling`**）、`enabled`，以及可选的 **`max_positions` / `margin_per_position` / `daily_loss_limit`** 与嵌套 **`rolling`**。  
+运行时 **`LiveTrader`**（当配置了非空 `strategies`）通过 **`strategy_factory.load_strategies_from_config`** 构造 **`RollingLiveStrategy`**：对每个槽位为 **`RollingLiveConfig` 默认值 → `data/config.json` 全局 `"rolling"`（若存在）→ 槽位内 `"rolling"` 覆盖**；槽位顶层 `id` 写入 `strategy_id`（须唯一）。若 **`strategies` 为空或全部禁用**，则回退为单一默认 R24，并读全局 `rolling`。  
+`python -m live run` 在启动打印里仍用 **`load_rolling_strategies_from_live_config`** 生成摘要（与上述加载在合并规则上一致）。
 
 ### 自定义策略
 
-实现 `Strategy` 的三个抽象方法，在 `__main__.py` 的 `run` 分支中替换 `RollingLiveStrategy` 即可；需自行 `create_scanner` 与 R24 解耦。
+实现 `Strategy` 抽象方法，并在 `strategy_factory.StrategyFactory.create_strategy` 中注册新的 `kind`；或仅在 `__main__.py` 的 `run` 分支手工传入策略实例。需自行 `create_scanner` 与 R24 解耦。
 
 ---
 
@@ -260,4 +278,4 @@ python -m pytest tests/ -v
 
 ## 依赖
 
-核心 Python：`httpx`、`pydantic`、`python-dotenv`、`rich`、`websockets`、`fastapi`、`uvicorn` 等（见 `pyproject.toml` / `requirements.txt`）。前端：**Vite 6 + React**，见 `web/package.json`；生产可用 `web/start.sh`（`serve dist`）或任意静态托管 `web/dist`。
+核心 Python：`httpx`、`pydantic`、`python-dotenv`、`rich`、`websockets`、`fastapi`、`uvicorn` 等（见 `pyproject.toml` / `requirements.txt`）。**不包含**其他本地 Git 仓库作为运行时依赖（策略代码均在 `live/`）。前端：**Vite 6 + React**，见 `web/package.json`；生产可用 `web/start.sh`（`serve dist`）或任意静态托管 `web/dist`。

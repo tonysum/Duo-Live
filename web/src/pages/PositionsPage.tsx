@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from "react"
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, Fragment } from "react"
 import { api, Position, OpenOrder, Kline } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import Layout from "@/components/kokonutui/layout"
@@ -137,6 +137,32 @@ function tpSlFromOpenOrders(orders: OpenOrder[], symbol: string) {
     return { tp, sl }
 }
 
+/** Strategy label badge component */
+function StrategyLabel({ strategyId }: { strategyId?: string }) {
+    if (!strategyId) return null
+
+    // Color mapping for visual differentiation
+    const colorMap: Record<string, string> = {
+        r24_fast: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
+        r24_slow: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",
+        rsi_strategy: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300",
+        grid_strategy: "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
+    }
+
+    const colorClass = colorMap[strategyId] || "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
+
+    return (
+        <span
+            className={cn(
+                "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium",
+                colorClass
+            )}
+        >
+            {strategyId}
+        </span>
+    )
+}
+
 /** 由触发价反推价格收益率 %（与后端 TP/SL 距离定义一致） */
 function pctFromTpSl(
     entry: number,
@@ -198,6 +224,35 @@ export default function PositionsPage() {
     const [klines, setKlines] = useState<Kline[]>([])
     const [chartInterval, setChartInterval] = useState("1h")
     const [chartLoading, setChartLoading] = useState(false)
+    /** Strategy filter */
+    const [selectedStrategy, setSelectedStrategy] = useState<string | null>(null)
+    /** Grouped view toggle */
+    const [groupedView, setGroupedView] = useState(false)
+
+    // Extract unique strategy IDs from positions
+    const strategies = useMemo(() => {
+        const ids = new Set(positions.map((p) => p.strategy_id).filter(Boolean))
+        return Array.from(ids) as string[]
+    }, [positions])
+
+    // Filter positions based on selected strategy
+    const filteredPositions = useMemo(() => {
+        if (!selectedStrategy) return positions
+        return positions.filter((p) => p.strategy_id === selectedStrategy)
+    }, [positions, selectedStrategy])
+
+    // Group positions by strategy
+    const groupedPositions = useMemo(() => {
+        if (!groupedView) return null
+
+        const groups: Record<string, Position[]> = {}
+        filteredPositions.forEach((p) => {
+            const key = p.strategy_id || "default"
+            if (!groups[key]) groups[key] = []
+            groups[key].push(p)
+        })
+        return groups
+    }, [filteredPositions, groupedView])
 
     const selectedPosition = useMemo(
         () => positions.find((p) => p.symbol === selectedSymbol) ?? null,
@@ -434,27 +489,66 @@ export default function PositionsPage() {
         <Layout>
             <div className="space-y-6">
                 {/* Header */}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-3">
                     <div>
                         <h1 className="text-lg font-bold text-zinc-900 dark:text-white flex items-center gap-2">
                             <Briefcase className="w-4 h-4 text-zinc-900 dark:text-zinc-50" />
                             Current Positions
                             <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
-                                ({positions.length})
+                                ({filteredPositions.length}{selectedStrategy ? ` / ${positions.length}` : ""})
                             </span>
                         </h1>
                     </div>
-                    {positions.length > 0 && (
-                        <span
-                            className={cn("text-sm font-semibold font-mono", {
-                                "text-emerald-600 dark:text-emerald-400": totalPnl >= 0,
-                                "text-red-600 dark:text-red-400": totalPnl < 0,
-                            })}
-                        >
-                            Total: {totalPnl >= 0 ? "+" : ""}
-                            {totalPnl.toFixed(2)} USDT
-                        </span>
-                    )}
+                    <div className="flex items-center gap-3">
+                        {/* Strategy Filter */}
+                        {strategies.length > 0 && (
+                            <select
+                                value={selectedStrategy || "all"}
+                                onChange={(e) => setSelectedStrategy(e.target.value === "all" ? null : e.target.value)}
+                                className={cn(
+                                    "px-3 py-1.5 text-xs rounded-lg",
+                                    "bg-zinc-50 dark:bg-zinc-800",
+                                    "border border-zinc-200 dark:border-zinc-700",
+                                    "text-zinc-900 dark:text-zinc-100",
+                                    "focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500",
+                                    "transition-colors"
+                                )}
+                            >
+                                <option value="all">All Strategies</option>
+                                {strategies.map((id) => (
+                                    <option key={id} value={id}>
+                                        {id}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                        {/* Group Toggle */}
+                        {strategies.length > 0 && (
+                            <button
+                                onClick={() => setGroupedView(!groupedView)}
+                                className={cn(
+                                    "px-3 py-1.5 text-xs rounded-lg font-medium",
+                                    "bg-zinc-100 dark:bg-zinc-800",
+                                    "hover:bg-zinc-200 dark:hover:bg-zinc-700",
+                                    "text-zinc-900 dark:text-zinc-100",
+                                    "transition-colors"
+                                )}
+                            >
+                                {groupedView ? "Flat View" : "Group by Strategy"}
+                            </button>
+                        )}
+                        {filteredPositions.length > 0 && (
+                            <span
+                                className={cn("text-sm font-semibold font-mono", {
+                                    "text-emerald-600 dark:text-emerald-400": totalPnl >= 0,
+                                    "text-red-600 dark:text-red-400": totalPnl < 0,
+                                })}
+                            >
+                                Total: {totalPnl >= 0 ? "+" : ""}
+                                {totalPnl.toFixed(2)} USDT
+                            </span>
+                        )}
+                    </div>
                 </div>
 
                 {error && (
@@ -500,6 +594,7 @@ export default function PositionsPage() {
                                     <tr className="border-b border-zinc-100 dark:border-zinc-800">
                                         {[
                                             "Symbol",
+                                            "Strategy",
                                             "Side",
                                             "Qty",
                                             "Entry",
@@ -523,29 +618,34 @@ export default function PositionsPage() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {positions.map((p) => {
-                                        const isSel = selectedSymbol === p.symbol
-                                        return (
-                                        <tr
-                                            key={p.symbol}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={() => setSelectedSymbol(p.symbol)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" || e.key === " ") {
-                                                    e.preventDefault()
-                                                    setSelectedSymbol(p.symbol)
-                                                }
-                                            }}
-                                            className={cn(
-                                                "border-b border-zinc-50 dark:border-zinc-800/50 transition-colors cursor-pointer",
-                                                isSel
-                                                    ? "bg-emerald-50/80 dark:bg-emerald-950/30"
-                                                    : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
-                                            )}
-                                        >
+                                    {!groupedView ? (
+                                        // Flat view
+                                        filteredPositions.map((p) => {
+                                            const isSel = selectedSymbol === p.symbol
+                                            return (
+                                            <tr
+                                                key={p.symbol}
+                                                role="button"
+                                                tabIndex={0}
+                                                onClick={() => setSelectedSymbol(p.symbol)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === "Enter" || e.key === " ") {
+                                                        e.preventDefault()
+                                                        setSelectedSymbol(p.symbol)
+                                                    }
+                                                }}
+                                                className={cn(
+                                                    "border-b border-zinc-50 dark:border-zinc-800/50 transition-colors cursor-pointer",
+                                                    isSel
+                                                        ? "bg-emerald-50/80 dark:bg-emerald-950/30"
+                                                        : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+                                                )}
+                                            >
                                             <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
                                                 {p.symbol}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <StrategyLabel strategyId={p.strategy_id} />
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span
@@ -642,7 +742,163 @@ export default function PositionsPage() {
                                             </td>
                                         </tr>
                                         )
-                                    })}
+                                    })
+                                    ) : (
+                                        // Grouped view
+                                        groupedPositions && Object.entries(groupedPositions).map(([strategyId, groupPositions]) => {
+                                            const groupPnl = groupPositions.reduce((sum, p) => sum + p.unrealized_pnl, 0)
+                                            return (
+                                                <Fragment key={strategyId}>
+                                                    {/* Group Header */}
+                                                    <tr className="bg-zinc-100 dark:bg-zinc-800/60 border-b border-zinc-200 dark:border-zinc-700">
+                                                        <td colSpan={12} className="px-4 py-2">
+                                                            <div className="flex items-center justify-between">
+                                                                <div className="flex items-center gap-2">
+                                                                    <StrategyLabel strategyId={strategyId === "default" ? undefined : strategyId} />
+                                                                    <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                                                                        {groupPositions.length} position{groupPositions.length > 1 ? "s" : ""}
+                                                                    </span>
+                                                                </div>
+                                                                <span
+                                                                    className={cn("text-xs font-medium font-mono", {
+                                                                        "text-emerald-600 dark:text-emerald-400": groupPnl >= 0,
+                                                                        "text-red-600 dark:text-red-400": groupPnl < 0,
+                                                                    })}
+                                                                >
+                                                                    Group PnL: {groupPnl >= 0 ? "+" : ""}
+                                                                    {groupPnl.toFixed(2)} USDT
+                                                                </span>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                    {/* Group Positions */}
+                                                    {groupPositions.map((p) => {
+                                                        const isSel = selectedSymbol === p.symbol
+                                                        return (
+                                                            <tr
+                                                                key={p.symbol}
+                                                                role="button"
+                                                                tabIndex={0}
+                                                                onClick={() => setSelectedSymbol(p.symbol)}
+                                                                onKeyDown={(e) => {
+                                                                    if (e.key === "Enter" || e.key === " ") {
+                                                                        e.preventDefault()
+                                                                        setSelectedSymbol(p.symbol)
+                                                                    }
+                                                                }}
+                                                                className={cn(
+                                                                    "border-b border-zinc-50 dark:border-zinc-800/50 transition-colors cursor-pointer",
+                                                                    isSel
+                                                                        ? "bg-emerald-50/80 dark:bg-emerald-950/30"
+                                                                        : "hover:bg-zinc-50 dark:hover:bg-zinc-800/30"
+                                                                )}
+                                                            >
+                                                                <td className="px-4 py-3 text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                                                                    {p.symbol}
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <StrategyLabel strategyId={p.strategy_id} />
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <span
+                                                                        className={cn(
+                                                                            "inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full",
+                                                                            {
+                                                                                "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400":
+                                                                                    p.side === "LONG",
+                                                                                "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400":
+                                                                                    p.side === "SHORT",
+                                                                            }
+                                                                        )}
+                                                                    >
+                                                                        {p.side === "LONG" ? (
+                                                                            <ArrowUpRight className="w-3 h-3" />
+                                                                        ) : (
+                                                                            <ArrowDownLeft className="w-3 h-3" />
+                                                                        )}
+                                                                        {p.side}
+                                                                    </span>
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                                    {p.quantity}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                                    {p.entry_price.toFixed(4)}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                                    {p.leverage}x
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-orange-600 dark:text-orange-400 font-mono">
+                                                                    {p.liquidation_price > 0 ? p.liquidation_price.toFixed(4) : "—"}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400 font-mono">
+                                                                    {p.margin > 0 ? p.margin.toFixed(2) : "—"}
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <span
+                                                                        className={cn("text-xs font-medium font-mono", {
+                                                                            "text-red-600 dark:text-red-400": p.margin_ratio >= 80,
+                                                                            "text-yellow-600 dark:text-yellow-400": p.margin_ratio >= 50 && p.margin_ratio < 80,
+                                                                            "text-emerald-600 dark:text-emerald-400": p.margin_ratio < 50,
+                                                                        })}
+                                                                    >
+                                                                        {p.margin_ratio > 0 ? `${p.margin_ratio.toFixed(1)}%` : "—"}
+                                                                    </span>
+                                                                </td>
+                                                                <td className="px-4 py-3 text-xs text-cyan-600 dark:text-cyan-400 font-mono tabular-nums">
+                                                                    {formatMarkPrice(p.mark_price ?? 0)}
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <span
+                                                                        className={cn("text-xs font-medium font-mono", {
+                                                                            "text-emerald-600 dark:text-emerald-400": p.unrealized_pnl >= 0,
+                                                                            "text-red-600 dark:text-red-400": p.unrealized_pnl < 0,
+                                                                        })}
+                                                                    >
+                                                                        {p.unrealized_pnl >= 0 ? "+" : ""}
+                                                                        {p.unrealized_pnl.toFixed(4)}
+                                                                        {p.margin > 0 && (
+                                                                            <span className="ml-1 text-[10px] opacity-70">
+                                                                                ({(p.unrealized_pnl / p.margin * 100) >= 0 ? "+" : ""}
+                                                                                {(p.unrealized_pnl / p.margin * 100).toFixed(2)}%)
+                                                                            </span>
+                                                                        )}
+                                                                    </span>
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation()
+                                                                            void handleClose(p.symbol)
+                                                                        }}
+                                                                        disabled={closing === p.symbol}
+                                                                        className={cn(
+                                                                            "inline-flex items-center gap-1",
+                                                                            "px-2.5 py-1 rounded-md",
+                                                                            "text-[11px] font-medium",
+                                                                            "bg-red-100 dark:bg-red-900/30",
+                                                                            "text-red-600 dark:text-red-400",
+                                                                            "hover:bg-red-200 dark:hover:bg-red-900/50",
+                                                                            "transition-colors duration-200",
+                                                                            "disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                        )}
+                                                                    >
+                                                                        {closing === p.symbol ? (
+                                                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                                                        ) : (
+                                                                            <X className="w-3 h-3" />
+                                                                        )}
+                                                                        {closing === p.symbol ? "Closing..." : "Close"}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        )
+                                                    })}
+                                                </Fragment>
+                                            )
+                                        })
+                                    )}
                                 </tbody>
                             </table>
                         </div>

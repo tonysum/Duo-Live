@@ -97,6 +97,7 @@ class LivePositionMonitor:
         strategy: "Strategy | None" = None,
         strategy_registry: dict[str, "Strategy"] | None = None,
         on_sl_triggered=None,  # S: callable(symbol, strategy_id) on SL exit
+        quota_manager=None,  # QuotaManager (optional, for multi-strategy quota)
     ):
         self.client = client
         self.executor = executor
@@ -105,6 +106,7 @@ class LivePositionMonitor:
         self.notifier = notifier
         self.store = store
         self.on_sl_triggered = on_sl_triggered  # S
+        self.quota_manager = quota_manager  # Multi-strategy quota manager
         self.strategy = strategy
         if strategy_registry is not None:
             self._strategy_registry: dict[str, Any] = dict(strategy_registry)
@@ -144,6 +146,7 @@ class LivePositionMonitor:
         return getattr(ev, "config", None) if ev else self._rc
 
     def _clear_closed_position_store(self, pos: TrackedPosition) -> None:
+        """清理已关闭持仓的存储状态，并更新配额"""
         if not self.store:
             return
         try:
@@ -154,6 +157,15 @@ class LivePositionMonitor:
             self.store.delete_position_attribution(pos.symbol, pos.side)
         except Exception as e:
             logger.debug("delete_position_attribution: %s", e)
+        
+        # ── 更新策略配额：减少持仓计数 ──
+        if self.quota_manager and pos.strategy_id:
+            quota = self.quota_manager.get_quota(pos.strategy_id)
+            if quota:
+                quota.decrement_position()
+                logger.info(
+                    f"[{pos.strategy_id}] 配额更新: 持仓数 {quota.current_positions}/{quota.max_positions}"
+                )
 
     def track(
         self,

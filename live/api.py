@@ -150,6 +150,13 @@ class RollingParamsResponse(BaseModel):
     strategy_id: str
     top_n: int
     min_pct_chg: float
+    raw_min_pct_chg: float
+    raw_min_sell_surge: float
+    raw_max_signals_per_hour: int | None = None
+    enable_sell_surge_gate: bool = False
+    sell_surge_threshold: float = 10.0
+    sell_surge_max: float = 1e12
+    scan_delay_minutes: int = 1
     min_listed_days: int
     signal_cooldown_hours: int
     scan_interval_hours: int
@@ -189,6 +196,7 @@ class ConfigResponse(BaseModel):
     margin_mode: str
     margin_pct: float
     monitor_interval_seconds: int
+    paper_trading: bool = False
     rolling: RollingParamsResponse
     strategies: list[StrategyManifestItem]
     #: 进程内每路策略的最终 Rolling 快照（顺序与 scanner 一致；多路时右栏逐条展示）
@@ -207,6 +215,39 @@ class UpdateConfigRequest(BaseModel):
     daily_loss_limit_usdt: float | None = None
     margin_mode: str | None = None
     margin_pct: float | None = None
+    paper_trading: bool | None = None
+
+
+class QuotaItem(BaseModel):
+    """Strategy quota status."""
+    strategy_id: str
+    max_positions: int
+    current_positions: int
+    margin_per_position: float
+    daily_loss_limit: float
+    daily_realized_pnl: float
+    available_slots: int
+
+
+class StrategyConfigItem(BaseModel):
+    """Strategy configuration details."""
+    max_positions: int
+    margin_per_position: float
+    daily_loss_limit: float
+    scan_interval_hours: int
+    top_n: int
+    min_pct_chg: float
+    tp_initial: float
+    sl_threshold: float
+
+
+class StrategyDetailItem(BaseModel):
+    """Detailed strategy information with quota."""
+    id: str
+    kind: str
+    enabled: bool
+    config: StrategyConfigItem
+    quota: QuotaItem | None = None
 
 
 def _pair_trades(raw_fills: list[dict]) -> list[dict]:
@@ -465,6 +506,13 @@ def _rolling_params_response(rc: object | None) -> RollingParamsResponse:
         strategy_id=str(getattr(r, "strategy_id", None) or "r24"),
         top_n=r.top_n,
         min_pct_chg=r.min_pct_chg,
+        raw_min_pct_chg=r.raw_min_pct_chg,
+        raw_min_sell_surge=r.raw_min_sell_surge,
+        raw_max_signals_per_hour=r.raw_max_signals_per_hour,
+        enable_sell_surge_gate=r.enable_sell_surge_gate,
+        sell_surge_threshold=r.sell_surge_threshold,
+        sell_surge_max=r.sell_surge_max,
+        scan_delay_minutes=r.scan_delay_minutes,
         min_listed_days=r.min_listed_days,
         signal_cooldown_hours=r.signal_cooldown_hours,
         scan_interval_hours=r.scan_interval_hours,
@@ -509,13 +557,27 @@ def create_app(trader) -> FastAPI:
         version="1.0.0",
     )
 
-    # CORS - allow specific origins from env or localhost + all localhost variants
-    cors_env = os.environ.get("CORS_ORIGINS", "*")
-    allowed_origins = ["*"] if cors_env == "*" else cors_env.split(",")
+    # CORS：浏览器禁止 ``allow_origins=['*']`` 与 ``allow_credentials=True`` 同时使用，
+    # 否则预检/带凭证请求不会得到合法 ACAO。未设置环境变量时默认放行常见本地前端端口。
+    _cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if not _cors_raw:
+        allowed_origins = [
+            "http://localhost:3010",
+            "http://127.0.0.1:3010",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    elif _cors_raw == "*":
+        allowed_origins = ["*"]
+    else:
+        allowed_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    _creds = "*" not in allowed_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_credentials=True,
+        allow_credentials=_creds,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -783,6 +845,7 @@ def create_app(trader) -> FastAPI:
             margin_mode=c.margin_mode,
             margin_pct=c.margin_pct,
             monitor_interval_seconds=c.monitor_interval_seconds,
+            paper_trading=bool(getattr(c, "paper_trading", False)),
             rolling=rolling,
             strategies=manifests,
             strategy_runtimes=runtimes,
@@ -807,6 +870,8 @@ def create_app(trader) -> FastAPI:
             c.margin_mode = req.margin_mode
         if req.margin_pct is not None:
             c.margin_pct = req.margin_pct
+        if req.paper_trading is not None:
+            c.paper_trading = bool(req.paper_trading)
         c.save_to_file()
         logger.info("配置已更新 (via API)")
         return {
@@ -817,8 +882,80 @@ def create_app(trader) -> FastAPI:
             "daily_loss_limit_usdt": float(c.daily_loss_limit_usdt),
             "margin_mode": c.margin_mode,
             "margin_pct": c.margin_pct,
+            "paper_trading": c.paper_trading,
             "message": "配置已保存",
         }
+
+    # ── Multi-strategy Quotas ────────────────────────────────────
+
+    @app.get("/api/quotas")
+    async def get_quotas():
+        """Get all strategy quotas (multi-strategy resource management)."""
+        if not hasattr(trader, 'quota_manager') or trader.quota_manager is None:
+            return {"quotas": {}, "message": "Quota manager not initialized"}
+        
+        try:
+            quotas_dict = trader.quota_manager.to_dict()
+            return {
+                "quotas": quotas_dict,
+                "total_strategies": len(quotas_dict),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
+
+    @app.get("/api/strategies")
+    async def get_strategies():
+        """Get all loaded strategies with their configurations."""
+        try:
+            strategies_list = []
+            
+            # Get strategies from trader
+            ordered_strategies = getattr(trader, '_strategies_ordered', [])
+            if not ordered_strategies and hasattr(trader, 'strategy'):
+                ordered_strategies = [trader.strategy]
+            
+            for strat in ordered_strategies:
+                cfg = getattr(strat, 'config', None)
+                if not cfg:
+                    continue
+                
+                strategy_id = getattr(cfg, 'strategy_id', 'unknown')
+                
+                # Get quota info
+                quota = None
+                if hasattr(trader, 'quota_manager') and trader.quota_manager:
+                    quota = trader.quota_manager.get_quota(strategy_id)
+                
+                strategy_info = {
+                    "id": strategy_id,
+                    "kind": "rolling",  # Currently only rolling is supported
+                    "enabled": True,  # If it's loaded, it's enabled
+                    "config": {
+                        "max_positions": getattr(cfg, 'max_positions', 3),
+                        "margin_per_position": float(getattr(cfg, 'margin_per_position', 5.0)),
+                        "daily_loss_limit": float(getattr(cfg, 'daily_loss_limit', 20.0)),
+                        "scan_interval_hours": getattr(cfg, 'scan_interval_hours', 2),
+                        "top_n": getattr(cfg, 'top_n', 5),
+                        "min_pct_chg": getattr(cfg, 'min_pct_chg', 5.0),
+                        "tp_initial": getattr(cfg, 'tp_initial', 0.34),
+                        "sl_threshold": getattr(cfg, 'sl_threshold', 0.44),
+                    },
+                }
+                
+                # Add runtime quota status
+                if quota:
+                    strategy_info["quota"] = quota.to_dict()
+                
+                strategies_list.append(strategy_info)
+            
+            return {
+                "strategies": strategies_list,
+                "total": len(strategies_list),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            raise HTTPException(500, detail=str(e))
 
     # ── Auto-trade toggle ────────────────────────────────────────
 

@@ -20,14 +20,17 @@ from typing import Any, Optional
 from rich.console import Console
 
 from .models import utc_now
-from .live_config import LiveTradingConfig
+from .live_config import LiveTradingConfig, CONFIG_PATH
 from .live_executor import LiveOrderExecutor
 from .live_position_monitor import LivePositionMonitor
-from .store import TradeStore, SignalEvent
+from .store import TradeStore, SignalEvent, LiveTrade
 from .binance_client import BinanceFuturesClient
 from .notifier import TelegramNotifier
 from .ws_stream import BinanceUserStream
 from .strategy import Strategy, signal_strategy_id, strategy_registry_key
+from .strategy_factory import load_strategies_from_config
+from .strategy_quota import QuotaManager
+from .paper_trading import PaperTradingLoop
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +57,44 @@ class LiveTrader:
         self._main_task: Optional[asyncio.Task] = None
         self._process_started_at: datetime | None = None  # 本进程进入 trader 主循环的时间 (UTC)
 
-        # Pluggable strategy (required — set by __main__.py)
-        if strategy is None:
-            raise ValueError("strategy is required")
-        self.strategy = strategy
-        extras = list(extra_strategies or [])
-        self._strategies_ordered: list[Strategy] = [self.strategy] + extras
+        # Persistence (signal events + live trades)
+        self.store = TradeStore(self.config.db_path)
+
+        # ── Multi-strategy loading ────────────────────────────────────
+        # 优先使用配置文件中的 strategies[]，否则使用传入的 strategy 参数
+        if self.config.strategies:
+            # 从配置文件加载策略（新方式）
+            logger.info("Loading strategies from config.strategies[]")
+            self._strategies_ordered = load_strategies_from_config(
+                config=self.config,
+                store=self.store,
+                config_path=CONFIG_PATH,
+            )
+        elif strategy is not None:
+            # 使用传入的策略参数（向后兼容）
+            logger.info("Using strategy passed to __init__")
+            extras = list(extra_strategies or [])
+            self._strategies_ordered = [strategy] + extras
+            # 注入 store
+            for s in self._strategies_ordered:
+                if hasattr(s, '_store'):
+                    s._store = self.store
+        else:
+            # 降级：从配置文件加载默认 R24 策略
+            logger.warning("No strategy provided, loading default from config")
+            self._strategies_ordered = load_strategies_from_config(
+                config=self.config,
+                store=self.store,
+                config_path=CONFIG_PATH,
+            )
+
+        # Primary strategy (for backward compatibility)
+        self.strategy = self._strategies_ordered[0]
 
         # Strategy config shortcut (primary — API /dashboard rolling snapshot)
         self.rolling_config = getattr(self.strategy, 'config', None)
 
-        # Multi-strategy: id → Strategy
+        # Multi-strategy registry: id → Strategy
         reg: dict[str, Strategy] = {}
         for s in self._strategies_ordered:
             sk = strategy_registry_key(s)
@@ -75,17 +105,15 @@ class LiveTrader:
             reg[sk] = s
         self._strategy_registry = reg
 
+        # ── Quota Manager ─────────────────────────────────────────────
+        self.quota_manager = QuotaManager()
+        self._register_strategy_quotas()
+
         # Shared Binance client
         self.client = BinanceFuturesClient()
 
         # Signal queue (all scanners fan-in → executor)
         self.signal_queue: asyncio.Queue = asyncio.Queue()
-
-        # Persistence (signal events + live trades)
-        self.store = TradeStore(self.config.db_path)
-        for s in self._strategies_ordered:
-            if hasattr(s, '_store'):
-                s._store = self.store
 
         # Scanners — one per strategy, shared queue
         self.scanners: list[Any] = [
@@ -118,7 +146,22 @@ class LiveTrader:
             strategy=self.strategy,
             strategy_registry=self._strategy_registry,
             on_sl_triggered=self._dispatch_sl_cooldown,
+            quota_manager=self.quota_manager,
         )
+
+        self.paper_loop: PaperTradingLoop | None = None
+        if self.config.paper_trading:
+            self.paper_loop = PaperTradingLoop(
+                client=self.client,
+                config=self.config,
+                store=self.store,
+                strategy_registry=self._strategy_registry,
+                default_strategy=self.strategy,
+                quota_manager=self.quota_manager,
+                on_sl_triggered=self._dispatch_sl_cooldown,
+                poll_interval=max(30, self.config.monitor_interval_seconds),
+            )
+            logger.info("模拟盘 paper_trading=on：不向交易所下单，持仓见 paper_positions / live_trades.is_paper")
 
         # WebSocket user data stream (real-time fills)
         self.ws_stream = BinanceUserStream(client=self.client, notifier=self.notifier)
@@ -149,6 +192,32 @@ class LiveTrader:
             if callable(fn):
                 fn(symbol)
 
+    def _register_strategy_quotas(self) -> None:
+        """为每个策略注册资金配额"""
+        for s in self._strategies_ordered:
+            strategy_id = strategy_registry_key(s)
+            cfg = getattr(s, 'config', None)
+
+            # 从策略配置或全局配置获取参数
+            if cfg:
+                max_pos = getattr(cfg, 'max_positions', self.config.max_positions)
+                margin = getattr(cfg, 'margin_per_position', self.config.live_fixed_margin_usdt)
+                loss_limit = getattr(cfg, 'daily_loss_limit', self.config.daily_loss_limit_usdt)
+            else:
+                max_pos = self.config.max_positions
+                margin = self.config.live_fixed_margin_usdt
+                loss_limit = self.config.daily_loss_limit_usdt
+
+            # 如果策略配置中没有这些字段，使用全局配置
+            # 这样可以在 strategies[] 中为每个策略单独配置
+            from decimal import Decimal
+            self.quota_manager.register_strategy(
+                strategy_id=strategy_id,
+                max_positions=max_pos,
+                margin_per_position=Decimal(str(margin)),
+                daily_loss_limit=Decimal(str(loss_limit)),
+            )
+
     async def start(self):
         """Start all sub-services concurrently."""
         self._running = True
@@ -178,6 +247,8 @@ class LiveTrader:
                     self._daily_pnl_report(),
                     self._memory_watchdog(),
                 ]
+                if self.paper_loop:
+                    tasks.append(self.paper_loop.run_forever())
 
                 # WebSocket user data stream
                 self.ws_stream.on_order_update = self.live_monitor.handle_order_update
@@ -286,11 +357,18 @@ class LiveTrader:
                     all_pos = await self.client.get_position_risk()
                     open_pos = [p for p in all_pos if float(p.position_amt) != 0]
                     open_symbols = {p.symbol for p in open_pos}
-                    open_count = len(open_pos)
+                    if self.config.paper_trading:
+                        open_symbols = open_symbols | self.store.paper_open_symbols()
+                        open_count = len(open_pos) + self.store.paper_open_count()
+                    else:
+                        open_count = len(open_pos)
                 except Exception as e:
                     logger.warning("Failed to pre-check positions: %s", e)
                     open_symbols = set()
                     open_count = 0
+                    if self.config.paper_trading:
+                        open_symbols = self.store.paper_open_symbols()
+                        open_count = self.store.paper_open_count()
 
                 # Sort by surge ratio descending — strongest signals first
                 pending.sort(key=lambda s: s.surge_ratio, reverse=True)
@@ -362,8 +440,8 @@ class LiveTrader:
                     if not self._running:
                         break
 
-                    # ── Auto-trade gate ──────────────────────
-                    if not self.auto_trade_enabled:
+                    # ── Auto-trade gate（模拟盘可不依赖 auto_trade）──────────
+                    if not self.auto_trade_enabled and not self.config.paper_trading:
                         self.console.print(
                             f"  [yellow]⏸ Auto-trade OFF[/yellow] — "
                             f"skip {s.symbol} (surge: {s.surge_ratio:.1f}x)"
@@ -411,6 +489,26 @@ class LiveTrader:
         pending = live_pending or set()
         sid = signal_strategy_id(signal)
         strat = self._resolve_strategy(sid)
+
+        # ── Quota check ────────────────────────────────────────
+        quota = self.quota_manager.get_quota(sid)
+        if not quota:
+            logger.error(f"[{sid}] No quota found for strategy")
+            return False
+
+        can_open, quota_reason = quota.can_open_position()
+        if not can_open:
+            logger.info(f"[{sid}] Quota check failed: {quota_reason}")
+            self.store.save_signal_event(SignalEvent(
+                timestamp=now.isoformat(), symbol=symbol,
+                surge_ratio=signal.surge_ratio, price=str(signal.price),
+                accepted=False, reject_reason=f"quota: {quota_reason}",
+                strategy_id=sid,
+            ))
+            return False
+
+        if self.config.paper_trading:
+            return await self._execute_paper_entry(signal, pending=pending, sid=sid, strat=strat)
 
         # ── Guard checks (exchange positions + in-flight orders) ──
         try:
@@ -518,21 +616,9 @@ class LiveTrader:
             except Exception as e:
                 logger.warning("查询每日盈亏失败 (fail-open): %s", e)
 
-        # ── Position sizing ────────────────────────────────────────
-        if self.config.margin_mode == "percent":
-            try:
-                account_info = await self.client.get_account_info()
-                available = Decimal(str(account_info.get("availableBalance", "0")))
-                margin = available * Decimal(str(self.config.margin_pct)) / Decimal("100")
-                margin = max(margin, Decimal("1"))  # 最少 1 USDT
-                logger.info("[%s] 百分比保证金: %.2f USDT (%.1f%% of %.2f)",
-                            sid, margin, self.config.margin_pct, available)
-            except Exception as e:
-                logger.warning("[%s] 获取余额失败, 降级为固定保证金: %s", sid, e)
-                margin = self.config.live_fixed_margin_usdt
-        else:
-            margin = self.config.live_fixed_margin_usdt
-            logger.info("[%s] 固定保证金: %s USDT", sid, margin)
+        # ── Position sizing (use quota margin) ────────────────────
+        margin = quota.get_available_margin()
+        logger.info("[%s] 使用配额保证金: %s USDT", sid, margin)
         quantity = margin * self.config.leverage / entry_price
 
         # ── Place live order ────────────────────────────────────
@@ -573,6 +659,8 @@ class LiveTrader:
                         sl_pct=decision.sl_pct,
                         strategy_id=sid,
                     )
+                # Update quota
+                quota.increment_position()
                 # Telegram notification
                 if self.notifier:
                     await self.notifier.notify_entry_placed(
@@ -590,6 +678,160 @@ class LiveTrader:
             return False
 
         return True  # order was placed
+
+    async def _execute_paper_entry(
+        self,
+        signal,
+        *,
+        pending: set[str],
+        sid: str,
+        strat: Any,
+    ) -> bool:
+        """模拟开仓：写 SQLite，不调用交易所。"""
+        symbol = signal.symbol
+        now = utc_now()
+        quota = self.quota_manager.get_quota(sid)
+        if not quota:
+            return False
+
+        if symbol in pending:
+            self.store.save_signal_event(
+                SignalEvent(
+                    timestamp=now.isoformat(),
+                    symbol=symbol,
+                    surge_ratio=signal.surge_ratio,
+                    price=str(signal.price),
+                    accepted=False,
+                    reject_reason="pending batch duplicate",
+                    strategy_id=sid,
+                )
+            )
+            return False
+
+        if self.store.has_paper_position(symbol, sid):
+            self.store.save_signal_event(
+                SignalEvent(
+                    timestamp=now.isoformat(),
+                    symbol=symbol,
+                    surge_ratio=signal.surge_ratio,
+                    price=str(signal.price),
+                    accepted=False,
+                    reject_reason="already in paper position",
+                    strategy_id=sid,
+                )
+            )
+            return False
+
+        try:
+            all_pos = await self.client.get_position_risk()
+            if any(
+                p.symbol == symbol and float(p.position_amt) != 0
+                for p in all_pos
+            ):
+                self.store.save_signal_event(
+                    SignalEvent(
+                        timestamp=now.isoformat(),
+                        symbol=symbol,
+                        surge_ratio=signal.surge_ratio,
+                        price=str(signal.price),
+                        accepted=False,
+                        reject_reason="exchange position exists",
+                        strategy_id=sid,
+                    )
+                )
+                return False
+        except Exception as e:
+            logger.warning("Paper: position risk failed: %s", e)
+            return False
+
+        try:
+            ticker = await self.client.get_ticker_price(symbol)
+            entry_price = ticker.price
+        except Exception as e:
+            logger.warning("[%s] Paper: price fetch failed %s: %s", sid, symbol, e)
+            return False
+
+        signal_price = Decimal(str(signal.price))
+        decision = await strat.filter_entry(
+            client=self.client,
+            signal=signal,
+            entry_price=entry_price,
+            signal_price=signal_price,
+            now=now,
+            config=self.config,
+        )
+        if not decision.should_enter:
+            self.store.save_signal_event(
+                SignalEvent(
+                    timestamp=now.isoformat(),
+                    symbol=symbol,
+                    surge_ratio=signal.surge_ratio,
+                    price=str(entry_price),
+                    accepted=False,
+                    reject_reason=decision.reject_reason or "filtered",
+                    strategy_id=sid,
+                )
+            )
+            return False
+
+        margin = quota.get_available_margin()
+        quantity = margin * self.config.leverage / entry_price
+        side = decision.side or "SHORT"
+
+        if not self.paper_loop:
+            logger.error("paper_trading on but paper_loop is None")
+            return False
+
+        oid = self.paper_loop.register_paper_entry(
+            symbol=symbol,
+            strategy_id=sid,
+            side=side,
+            entry_price=entry_price,
+            quantity=quantity,
+            margin_usdt=margin,
+            tp_pct=float(decision.tp_pct),
+            sl_pct=float(decision.sl_pct),
+        )
+
+        self.store.save_signal_event(
+            SignalEvent(
+                timestamp=now.isoformat(),
+                symbol=symbol,
+                surge_ratio=signal.surge_ratio,
+                price=str(entry_price),
+                accepted=True,
+                strategy_id=sid,
+            )
+        )
+        self.store.save_live_trade(
+            LiveTrade(
+                symbol=symbol,
+                side=side,
+                event="entry",
+                entry_price=str(entry_price),
+                quantity=str(quantity),
+                margin_usdt=str(margin),
+                leverage=self.config.leverage,
+                order_id=str(oid),
+                is_paper=True,
+            )
+        )
+        self.store.upsert_position_attribution(symbol, side, sid)
+        quota.increment_position()
+        self.console.print(
+            f"  [magenta]📝 PAPER ENTRY[/magenta] {symbol} {side} @ {entry_price} "
+            f"(qty: {float(quantity):.4f})"
+        )
+        if self.notifier:
+            await self.notifier.notify_entry_placed(
+                symbol=symbol,
+                side=side,
+                price=str(entry_price),
+                qty=f"{float(quantity):.4f}",
+                margin=str(margin),
+                order_id=f"paper:{oid}",
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Periodic Tasks

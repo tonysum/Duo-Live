@@ -1,48 +1,48 @@
 {
-  "leverage": 2,
-  "max_positions": 8,
-  "max_entries_per_day": 8,
+  "paper_trading": true,
+  "leverage": 3,
+  "max_positions": 7,
+  "max_entries_per_day": 7,
   "live_fixed_margin_usdt": 5.0,
   "daily_loss_limit_usdt": 50.0,
   "margin_mode": "fixed",
   "margin_pct": 2.0,
   "rolling": {
-    "strategy_id": "r24",
-    "scan_interval_hours": 2,
-    "signal_cooldown_hours": 8,
-    "top_n": 5,
-    "min_pct_chg": 5.0,
-    "tp_initial": 0.16,
-    "sl_threshold": 0.42,
-    "tp_reduced": 0.08,
-    "tp_hours_threshold": 6,
-    "trailing_activation_pct": 0.08,
-    "trailing_distance_pct": 0.04,
-    "add_position_threshold": 0.2,
-    "tp_after_add": 0.40,
-    "max_hold_days": 7,
-    "min_listed_days": 10
+    "strategy_id": "r24_raw_surge",
+    "scan_interval_hours": 1,
+    "scan_delay_minutes": 1,
+    "signal_cooldown_hours": 12,
+    "top_n": 1,
+    "raw_min_pct_chg": 10.0,
+    "raw_min_sell_surge": 10,
+    "raw_max_signals_per_hour": null,
+    "min_pct_chg": 10.0,
+    "min_listed_days": 10,
+    "enable_main_profit_check": false,
+    "tp_initial": 0.12,
+    "sl_threshold": 0.34,
+    "tp_reduced": 0.12,
+    "tp_hours_threshold": 10,
+    "trailing_activation_pct": 0.16,
+    "trailing_distance_pct": 0.13,
+    "add_position_threshold": 0.24,
+    "tp_after_add": 0.34,
+    "max_hold_days": 3,
+    "enable_sell_surge_gate": false,
+    "sell_surge_threshold": 10.0,
+    "sell_surge_max": 10000.0,
+    "enable_trailing_stop": true,
+    "enable_add_position": false
   },
   "strategies": [
     {
-      "id": "r24_fast",
+      "id": "r24_raw_surge",
       "kind": "rolling",
       "enabled": true,
-      "rolling": {
-        "scan_interval_hours": 2,
-        "top_n": 4,
-        "signal_cooldown_hours": 6
-      }
-    },
-    {
-      "id": "r24_slow",
-      "kind": "rolling",
-      "enabled": false,
-      "rolling": {
-        "scan_interval_hours": 4,
-        "top_n": 6,
-        "signal_cooldown_hours": 10
-      }
+      "max_positions": 7,
+      "margin_per_position": 5.0,
+      "daily_loss_limit": 50.0,
+      "rolling": {}
     }
   ]
 }

@@ -47,6 +47,7 @@ class LiveTrade:
     order_id: str = ""
     algo_id: str = ""
     timestamp: str = ""
+    is_paper: bool = False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -108,6 +109,27 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
     unrealized_pnl REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Open simulated positions (paper trading); survives restart
+CREATE TABLE IF NOT EXISTS paper_positions (
+    symbol TEXT NOT NULL,
+    strategy_id TEXT NOT NULL DEFAULT 'r24',
+    side TEXT NOT NULL,
+    entry_order_id INTEGER NOT NULL,
+    quantity TEXT NOT NULL,
+    entry_price TEXT NOT NULL,
+    margin_usdt TEXT NOT NULL,
+    leverage INTEGER NOT NULL,
+    tp_pct REAL NOT NULL,
+    sl_pct REAL NOT NULL,
+    current_tp_pct REAL NOT NULL,
+    entry_fill_time TEXT NOT NULL,
+    has_added_position INTEGER NOT NULL DEFAULT 0,
+    lowest_price TEXT,
+    deferred_tp_sl_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, strategy_id)
+);
 """
 
 
@@ -165,6 +187,14 @@ class TradeStore:
                     )
                     """
                 )
+                lt_cols = {
+                    r[1]
+                    for r in self._conn.execute("PRAGMA table_info(live_trades)").fetchall()
+                }
+                if "is_paper" not in lt_cols:
+                    self._conn.execute(
+                        "ALTER TABLE live_trades ADD COLUMN is_paper INTEGER NOT NULL DEFAULT 0"
+                    )
             finally:
                 self._conn.row_factory = row_factory
             self._conn.commit()
@@ -205,6 +235,7 @@ class TradeStore:
         d = asdict(trade)
         if not d.get("timestamp"):
             d["timestamp"] = utc_now().isoformat()
+        d["is_paper"] = int(d.get("is_paper", False))
         cols = ", ".join(d.keys())
         placeholders = ", ".join(["?"] * len(d))
         with self._lock:
@@ -255,7 +286,116 @@ class TradeStore:
                 rows = self._conn.execute(
                     "SELECT * FROM live_trades ORDER BY id DESC LIMIT ?", (limit,)
                 ).fetchall()
-        return [LiveTrade(**{k: row[k] for k in cols}) for row in rows]
+        out = []
+        for row in rows:
+            d = {k: row[k] for k in cols}
+            if "is_paper" in d:
+                d["is_paper"] = bool(d["is_paper"])
+            out.append(LiveTrade(**d))
+        return out
+
+    # ── Paper trading (simulated positions) ───────────────────────────
+
+    def paper_open_symbols(self) -> set[str]:
+        """Symbols with an open paper position (any strategy)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT symbol FROM paper_positions"
+            ).fetchall()
+        return {str(r["symbol"]) for r in rows}
+
+    def paper_open_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM paper_positions"
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def has_paper_position(self, symbol: str, strategy_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM paper_positions WHERE symbol = ? AND strategy_id = ?",
+                (symbol, strategy_id),
+            ).fetchone()
+        return row is not None
+
+    def upsert_paper_position(
+        self,
+        *,
+        symbol: str,
+        strategy_id: str,
+        side: str,
+        entry_order_id: int,
+        quantity: str,
+        entry_price: str,
+        margin_usdt: str,
+        leverage: int,
+        tp_pct: float,
+        sl_pct: float,
+        current_tp_pct: float,
+        entry_fill_time: str,
+        has_added_position: bool,
+        lowest_price: str | None,
+        deferred_tp_sl_json: str,
+    ) -> None:
+        now = utc_now().isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO paper_positions (
+                    symbol, strategy_id, side, entry_order_id, quantity,
+                    entry_price, margin_usdt, leverage, tp_pct, sl_pct,
+                    current_tp_pct, entry_fill_time, has_added_position,
+                    lowest_price, deferred_tp_sl_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, strategy_id) DO UPDATE SET
+                    entry_order_id = excluded.entry_order_id,
+                    quantity = excluded.quantity,
+                    entry_price = excluded.entry_price,
+                    margin_usdt = excluded.margin_usdt,
+                    leverage = excluded.leverage,
+                    tp_pct = excluded.tp_pct,
+                    sl_pct = excluded.sl_pct,
+                    current_tp_pct = excluded.current_tp_pct,
+                    entry_fill_time = excluded.entry_fill_time,
+                    has_added_position = excluded.has_added_position,
+                    lowest_price = excluded.lowest_price,
+                    deferred_tp_sl_json = excluded.deferred_tp_sl_json
+                """,
+                (
+                    symbol,
+                    strategy_id,
+                    side,
+                    entry_order_id,
+                    quantity,
+                    entry_price,
+                    margin_usdt,
+                    leverage,
+                    tp_pct,
+                    sl_pct,
+                    current_tp_pct,
+                    entry_fill_time,
+                    int(has_added_position),
+                    lowest_price or "",
+                    deferred_tp_sl_json,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def delete_paper_position(self, symbol: str, strategy_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM paper_positions WHERE symbol = ? AND strategy_id = ?",
+                (symbol, strategy_id),
+            )
+            self._conn.commit()
+
+    def list_paper_positions(self) -> list[dict]:
+        """All rows from ``paper_positions`` for recovery."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM paper_positions").fetchall()
+        return [dict(r) for r in rows]
 
     # ── Position State (crash-recovery for TP pct / strength) ────────
 

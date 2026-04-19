@@ -38,6 +38,9 @@ class LiveTradingConfig:
     # ── Persistence ────────────────────────────────────────────────────
     db_path: str = "data/trades.db"
 
+    #: True：按真实行情与策略逻辑模拟开平仓，写入 SQLite，**不向交易所下单**
+    paper_trading: bool = False
+
     # ── Multi-strategy manifest (declarative; runtime still wires instances in __main__) ──
     strategies: list[dict] = field(default_factory=list)
 
@@ -45,7 +48,7 @@ class LiveTradingConfig:
     MUTABLE_FIELDS = {
         "leverage", "max_positions", "max_entries_per_day",
         "live_fixed_margin_usdt", "daily_loss_limit_usdt",
-        "margin_mode", "margin_pct",
+        "margin_mode", "margin_pct", "paper_trading",
     }
 
     def save_to_file(self, path: Path = CONFIG_PATH) -> None:
@@ -74,6 +77,7 @@ class LiveTradingConfig:
             "daily_loss_limit_usdt": float(self.daily_loss_limit_usdt),
             "margin_mode": self.margin_mode,
             "margin_pct": self.margin_pct,
+            "paper_trading": self.paper_trading,
         }
         if rolling_block:
             data["rolling"] = rolling_block
@@ -114,6 +118,8 @@ class LiveTradingConfig:
                 self.margin_mode = data["margin_mode"]
             if "margin_pct" in data and "margin_pct" not in ex:
                 self.margin_pct = float(data["margin_pct"])
+            if "paper_trading" in data and "paper_trading" not in ex:
+                self.paper_trading = bool(data["paper_trading"])
             if "strategies" in data and isinstance(data["strategies"], list):
                 self.strategies = [x for x in data["strategies"] if isinstance(x, dict)]
             logger.info("Config loaded from %s (excluded keys: %s)", path, ", ".join(sorted(ex)) or "-")

@@ -39,6 +39,8 @@ export interface Position {
   liquidation_price: number;
   margin: number;
   margin_ratio: number;
+  /** Strategy ID that owns this position (multi-strategy support) */
+  strategy_id?: string;
 }
 
 export interface LiveTrade {
@@ -79,6 +81,13 @@ export interface RollingRuntimeParams {
   strategy_id: string;
   top_n: number;
   min_pct_chg: number;
+  raw_min_pct_chg: number;
+  raw_min_sell_surge: number;
+  raw_max_signals_per_hour: number | null;
+  enable_sell_surge_gate: boolean;
+  sell_surge_threshold: number;
+  sell_surge_max: number;
+  scan_delay_minutes: number;
   min_listed_days: number;
   signal_cooldown_hours: number;
   scan_interval_hours: number;
@@ -116,6 +125,7 @@ export interface Config {
   margin_mode: string;
   margin_pct: number;
   monitor_interval_seconds: number;
+  paper_trading: boolean;
   rolling: RollingRuntimeParams;
   strategies: StrategyManifestItem[];
   /** 进程内每路策略的 Rolling 快照（多路时与 rolling 主快照同源为首路） */
@@ -148,6 +158,53 @@ export interface OpenOrder {
   status: string;
   time: number;
   is_algo: boolean;
+}
+
+// ── Multi-Strategy Types ───────────────────────────────────────────
+/** Strategy quota from /api/quotas */
+export interface StrategyQuota {
+  strategy_id: string;
+  max_positions: number;
+  current_positions: number;
+  margin_per_position: number;
+  daily_loss_limit: number;
+  daily_realized_pnl: number;
+  available_slots: number;
+}
+
+/** Response from /api/quotas */
+export interface QuotasResponse {
+  quotas: Record<string, StrategyQuota>;
+  total_strategies: number;
+  timestamp: string;
+}
+
+/** Strategy configuration parameters */
+export interface StrategyConfig {
+  max_positions: number;
+  margin_per_position: number;
+  daily_loss_limit: number;
+  scan_interval_hours: number;
+  top_n: number;
+  min_pct_chg: number;
+  tp_initial: number;
+  sl_threshold: number;
+}
+
+/** Complete strategy from /api/strategies */
+export interface Strategy {
+  id: string;
+  kind: string;
+  enabled: boolean;
+  config: StrategyConfig;
+  quota: StrategyQuota;
+}
+
+/** Response from /api/strategies */
+export interface StrategiesResponse {
+  strategies: Strategy[];
+  total: number;
+  timestamp: string;
 }
 
 
@@ -224,6 +281,9 @@ export const api = {
     get<{ lines: string[]; total: number; path: string }>(
       `/api/logs?lines=${lines}&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`
     ),
+  // Multi-strategy endpoints
+  getQuotas: () => get<QuotasResponse>("/api/quotas"),
+  getStrategies: () => get<StrategiesResponse>("/api/strategies"),
   wsUrl: `${API_BASE.replace("http", "ws")}/ws/live`,
   /** `/ws/live` — optional `VITE_WS_TOKEN` must match server `WS_TOKEN` */
   wsLiveUrl: () => {

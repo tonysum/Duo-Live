@@ -22,20 +22,38 @@ ROLLING_JSON_KEY = "rolling"
 
 @dataclass
 class RollingLiveConfig:
-    """Configuration for Moonshot-R24 Rolling Strategy (live)."""
+    """Configuration for R24 raw-surge rolling strategy (live).
+
+    扫描：``raw_min_pct_chg`` + ``top_n``（24h ticker）→ ``raw_min_sell_surge``（卖量比）
+    → ``select_raw_surge_signals``（``min_pct_chg``、上市天数、可选二次卖量门控）。
+    """
 
     # Identity for multi-strategy routing (signals, attribution, monitor).
     strategy_id: str = "r24"
 
+    # ── 0. Strategy-level Quota (Multi-strategy) ────────────────────
+    max_positions: int = 3                # 策略最大持仓数
+    margin_per_position: float = 5.0     # 单笔保证金 (USDT)
+    daily_loss_limit: float = 20.0       # 每日亏损限额 (USDT)
+
     # ── 1. Signal Generation ─────────────────────────────────────────
-    top_n: int = 5                        # 每次扫描取涨幅前 N 名
-    min_pct_chg: float = 5.0             # 最小涨幅要求 10%
+    top_n: int = 5                        # 每次扫描取涨幅前 N 名（在 raw 候选之后）
+    min_pct_chg: float = 5.0             # 策略层最小涨幅（select_signals 内二次过滤）
     min_listed_days: int = 10             # 新币过滤
     signal_cooldown_hours: int = 8       # 同币种信号冷却期(小时)
     scan_interval_hours: int = 2          # 扫描间隔(小时)
+    scan_delay_minutes: int = 1           # UTC 整点后延迟（分钟），再触发扫描
 
-    # Main profit check
-    enable_main_profit_check: bool = True
+    # Raw-surge：24h ticker 涨幅门槛与卖量暴涨（与 paper RawSurgeScanner 一致）
+    raw_min_pct_chg: float = 10.0
+    raw_min_sell_surge: float = 10.0
+    raw_max_signals_per_hour: int | None = None
+    enable_sell_surge_gate: bool = False
+    sell_surge_threshold: float = 10.0
+    sell_surge_max: float = 1e12
+
+    # Main profit check（raw-surge 路径不使用；保留字段供配置兼容）
+    enable_main_profit_check: bool = False
     main_profit_thresholds: list = field(default_factory=lambda: [
         (40,  51),
         (60,  45),
@@ -67,6 +85,12 @@ class RollingLiveConfig:
 
 def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> None:
     cur = getattr(cfg, name)
+    if name == "raw_max_signals_per_hour":
+        if value is None:
+            setattr(cfg, name, None)
+        else:
+            setattr(cfg, name, int(value))
+        return
     if name == "main_profit_thresholds" and isinstance(value, list):
         pairs: list[tuple[int, int]] = []
         for item in value:
@@ -135,6 +159,11 @@ def load_rolling_from_config_json(
             ROLLING_JSON_KEY,
             ", ".join(applied) or "-",
         )
+    if isinstance(block, dict) and "raw_min_pct_chg" not in block and "min_pct_chg" in block:
+        try:
+            rolling.raw_min_pct_chg = float(block["min_pct_chg"])
+        except (TypeError, ValueError):
+            pass
     return True
 
 
@@ -144,7 +173,11 @@ def clone_rolling_config(base: RollingLiveConfig) -> RollingLiveConfig:
 
 
 def apply_rolling_overrides(rolling: RollingLiveConfig, block: dict) -> None:
-    """Apply key/values from a JSON object onto ``rolling`` (same rules as config file)."""
+    """Apply key/values from a JSON object onto ``rolling`` (same rules as config file).
+
+    不在这里做 ``min_pct_chg`` → ``raw_min_pct_chg`` 迁移（避免 strategies[] 只改策略层涨幅时误改 raw）。
+    根级 ``rolling`` 的迁移见 :func:`load_rolling_from_config_json`。
+    """
     rolling_names = {f.name for f in fields(RollingLiveConfig)}
     for k, v in block.items():
         if v is None or k not in rolling_names:
