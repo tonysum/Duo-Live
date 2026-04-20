@@ -1253,9 +1253,22 @@ def create_app(trader) -> FastAPI:
         await ws.send_json({"type": "init", "lines": _tail_log(path, lines=100)})
 
         seconds_since_send = 0
+        closed = asyncio.Event()
+
+        async def _drain_client_messages() -> None:
+            """Consume pings / keepalive from client so the receive buffer does not grow."""
+            try:
+                while True:
+                    await ws.receive_text()
+            except WebSocketDisconnect:
+                closed.set()
+            except Exception:
+                closed.set()
+
+        drain_task = asyncio.create_task(_drain_client_messages())
 
         try:
-            while True:
+            while not closed.is_set():
                 await asyncio.sleep(1)
                 seconds_since_send += 1
 
@@ -1287,6 +1300,12 @@ def create_app(trader) -> FastAPI:
 
         except Exception:
             pass  # Client disconnected or other error — exit cleanly
+        finally:
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
 
     @app.websocket("/ws/live")
     async def websocket_live(ws: WebSocket, token: str | None = None):

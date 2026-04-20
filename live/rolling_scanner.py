@@ -4,7 +4,8 @@
 
 1. GET /fapi/v1/ticker/24hr → 过滤 ``priceChangePercent >= raw_min_pct_chg``
    得到「涨幅合格集合」（不截断 top_n）。
-2. 对集合内每币算 ``sell_surge_ratio_at_hour``，保留 ``sr > raw_min_sell_surge``
+2. 对集合内每币算 ``sell_surge_ratio_at_hour``（**与 paper 一致：用上一根已收盘 UTC 1h K**，
+   即 ``hour_floor - 1h``，而非当前正在进行的小时），保留 ``sr > raw_min_sell_surge``
    者 → 得到「涨幅 ∩ 卖量 合格集合」。
 3. **按 sr 降序** 截 ``top_n`` 作为最终候选（排序依据见
    ``docs/signal-scan-order.md``）。
@@ -180,7 +181,10 @@ class RollingLiveScanner:
             "top_detail": [],
         }
 
-        hour_key = now.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:00")
+        hour_floor = now.replace(minute=0, second=0, microsecond=0)
+        hour_key = hour_floor.strftime("%Y-%m-%d %H:00")
+        # 与 duo-moonshot ``RawSurgeScanner`` / ``LiveFeed`` 一致：卖量用「上一整点已收盘」的 1h K
+        prev_hour = hour_floor - timedelta(hours=1)
         preloaded: dict[str, list[tuple]] = {hour_key: []}
         adapter = RawSurgeFeedAdapter()
 
@@ -195,7 +199,7 @@ class RollingLiveScanner:
                 stats["already_sent"] += 1
                 continue
 
-            sr, yavg = await sell_surge_ratio_at_hour(self.client, sym, now)
+            sr, yavg = await sell_surge_ratio_at_hour(self.client, sym, prev_hour)
             if sr is None or sr <= self.config.raw_min_sell_surge:
                 stats["sell_surge_fail"] += 1
                 self._lp(

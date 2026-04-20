@@ -304,7 +304,8 @@ export const api = {
       `http://${window.location.hostname}:8899`
     ).replace("http", "ws")
     const token = import.meta.env.VITE_WS_TOKEN
-    return `${base}/ws/logs${token ? `?token=${token}` : ""}`
+    const q = token ? `?token=${encodeURIComponent(String(token))}` : ""
+    return `${base}/ws/logs${q}`
   },
 
 };

@@ -114,7 +114,7 @@ export default function Sidebar() {
                     Trades
                   </NavItem>
                   <NavItem href="/logs" icon={ScrollText}>
-                    Logs
+                    日志
                   </NavItem>
                 </div>
               </div>

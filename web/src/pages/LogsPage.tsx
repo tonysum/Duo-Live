@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { api } from "@/lib/api"
 import Layout from "@/components/kokonutui/layout"
-import { ScrollText, Search, Wifi, WifiOff, Trash2, Download, ChevronDown } from "lucide-react"
+import { ScrollText, Search, Wifi, WifiOff, Trash2, Download, ChevronDown, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 // ── Log level coloring ──────────────────────────────────────────────
@@ -36,6 +36,8 @@ export default function LogsPage() {
     const [isLive, setIsLive] = useState(true)
     const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("connecting")
     const [autoScroll, setAutoScroll] = useState(true)
+    const [logPath, setLogPath] = useState<string>("")
+    const [pollFallback, setPollFallback] = useState(false)
     const bottomRef = useRef<HTMLDivElement>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const wsRef = useRef<WebSocket | null>(null)
@@ -135,19 +137,32 @@ export default function LogsPage() {
         }
     }, [isLive])
 
-    // Static fetch (not live)
-    const fetchStatic = useCallback(async () => {
+    // HTTP tail（静态模式 / 手动刷新 / WebSocket 断线时的轮询兜底）
+    const fetchLogsHttp = useCallback(async () => {
         try {
             const res = await api.getLogs(500, levelFilter, search)
             setLines(res.lines)
+            if (res.path) setLogPath(res.path)
         } catch (err) {
             console.error(err)
         }
     }, [levelFilter, search])
 
     useEffect(() => {
-        if (!isLive) fetchStatic()
-    }, [isLive, fetchStatic])
+        if (!isLive) fetchLogsHttp()
+    }, [isLive, fetchLogsHttp])
+
+    // 实时模式但 WebSocket 连不上时：每 5 秒拉一次 HTTP，避免必须 SSH 看日志
+    useEffect(() => {
+        if (!isLive || wsStatus !== "disconnected") {
+            setPollFallback(false)
+            return
+        }
+        setPollFallback(true)
+        void fetchLogsHttp()
+        const t = setInterval(() => void fetchLogsHttp(), 5000)
+        return () => clearInterval(t)
+    }, [isLive, wsStatus, fetchLogsHttp])
 
     // Client-side filtering
     const displayed = lines.filter(line => {
@@ -180,22 +195,37 @@ export default function LogsPage() {
                         </span>
                     </h1>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
                         {isLive && (
-                            <span className={cn("flex items-center gap-1.5 text-xs font-medium", {
-                                "text-emerald-500": wsStatus === "connected",
-                                "text-yellow-500": wsStatus === "connecting",
-                                "text-red-500": wsStatus === "disconnected",
-                            })}>
-                                {wsStatus === "connected"
-                                    ? <Wifi className="w-3.5 h-3.5" />
-                                    : <WifiOff className="w-3.5 h-3.5" />
-                                }
-                                {wsStatus === "connected" ? "实时" : wsStatus === "connecting" ? "连接中…" : "断线"}
-                            </span>
+                            <>
+                                <span className={cn("flex items-center gap-1.5 text-xs font-medium", {
+                                    "text-emerald-500": wsStatus === "connected",
+                                    "text-yellow-500": wsStatus === "connecting",
+                                    "text-red-500": wsStatus === "disconnected",
+                                })}>
+                                    {wsStatus === "connected"
+                                        ? <Wifi className="w-3.5 h-3.5" />
+                                        : <WifiOff className="w-3.5 h-3.5" />
+                                    }
+                                    {wsStatus === "connected" ? "实时" : wsStatus === "connecting" ? "连接中…" : "断线"}
+                                </span>
+                                {pollFallback && (
+                                    <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                                        · HTTP 每 5 秒拉取
+                                    </span>
+                                )}
+                            </>
                         )}
                     </div>
                 </div>
+
+                {pollFallback && (
+                    <div className="flex-shrink-0 rounded-lg border border-amber-200 dark:border-amber-800/80 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                        WebSocket 未连接，已自动改用 <code className="font-mono">GET /api/logs</code> 轮询尾部日志。
+                        若长期如此，请检查反向代理是否支持 <code className="font-mono">/ws/logs</code> 升级，以及
+                        <code className="font-mono">VITE_WS_TOKEN</code> 是否与服务器 <code className="font-mono">WS_TOKEN</code> 一致。
+                    </div>
+                )}
 
                 {/* Toolbar */}
                 <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
@@ -247,6 +277,15 @@ export default function LogsPage() {
                     </div>
 
                     <div className="ml-auto flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => void fetchLogsHttp()}
+                            title="立即从服务器拉取最新尾部"
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                        >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+
                         <button
                             onClick={() => {
                                 setAutoScroll(true)
@@ -313,6 +352,12 @@ export default function LogsPage() {
                     )}
                     <div ref={bottomRef} />
                 </div>
+
+                {logPath ? (
+                    <p className="flex-shrink-0 text-[10px] text-zinc-500 dark:text-zinc-600 truncate" title={logPath}>
+                        服务端文件：{logPath}
+                    </p>
+                ) : null}
             </div>
         </Layout>
     )
