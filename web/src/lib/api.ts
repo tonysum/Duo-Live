@@ -186,8 +186,11 @@ export interface StrategyConfig {
   daily_loss_limit: number;
   scan_interval_hours: number;
   top_n: number;
+  /** 百分点数字，如 10 = 10% */
   min_pct_chg: number;
+  /** 小数比例，如 0.12 = 12%（与 GET /api/config 的 rolling.tp_initial_pct 一致） */
   tp_initial: number;
+  /** 小数比例，如 0.34 = 34% */
   sl_threshold: number;
 }
 

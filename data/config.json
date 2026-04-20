@@ -12,7 +12,7 @@
     "scan_interval_hours": 1,
     "scan_delay_minutes": 1,
     "signal_cooldown_hours": 12,
-    "top_n": 1,
+    "top_n": 5,
     "raw_min_pct_chg": 10.0,
     "raw_min_sell_surge": 10,
     "raw_max_signals_per_hour": null,

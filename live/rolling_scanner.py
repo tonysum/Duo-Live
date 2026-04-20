@@ -1,8 +1,15 @@
 """Rolling Live Scanner — R24 raw-surge（与 paper RawSurgeScanner 语义一致）。
 
-1. GET /fapi/v1/ticker/24hr → ``raw_min_pct_chg`` + ``top_n``
-2. 每币 ``sell_surge_ratio_at_hour`` > ``raw_min_sell_surge``
-3. ``select_raw_surge_signals``：``min_pct_chg``、上市天数、可选二次卖量门控
+漏斗顺序（与 ``duo-moonshot/moonshot/paper/rolling_scanner.py`` 对齐）：
+
+1. GET /fapi/v1/ticker/24hr → 过滤 ``priceChangePercent >= raw_min_pct_chg``
+   得到「涨幅合格集合」（不截断 top_n）。
+2. 对集合内每币算 ``sell_surge_ratio_at_hour``，保留 ``sr > raw_min_sell_surge``
+   者 → 得到「涨幅 ∩ 卖量 合格集合」。
+3. **按 sr 降序** 截 ``top_n`` 作为最终候选（排序依据见
+   ``docs/signal-scan-order.md``）。
+4. ``select_raw_surge_signals``：``min_pct_chg``、上市天数、可选二次卖量门控。
+5. 去重/冷却 → 入队。
 """
 
 from __future__ import annotations
@@ -141,6 +148,7 @@ class RollingLiveScanner:
         tradeable = await self._get_usdt_symbols()
         tickers = await self.client.get_24hr_tickers()
 
+        # Step 1: 涨幅合格集合（不截断 top_n；对齐 paper）
         raw_candidates: list[tuple[str, float, float]] = []
         for t in tickers:
             sym = t.get("symbol", "")
@@ -151,14 +159,20 @@ class RollingLiveScanner:
                 raw_candidates.append((sym, pct_chg, float(t.get("lastPrice", 0))))
 
         raw_candidates.sort(key=lambda x: x[1], reverse=True)
-        gainers = raw_candidates[: self.config.top_n]
 
-        price_map = {s: p for s, _, p in gainers}
+        # REST 洪水保险：极端行情下涨幅合格币可能上百，每币要发 1h/1d K 线请求。
+        # 按涨幅倒序截到 MAX_SR_PROBE 再逐个算 sr。
+        max_probe = int(getattr(self.config, "max_sr_probe", 50) or 50)
+        probe_list = raw_candidates[:max_probe]
+
+        price_map = {s: p for s, _, p in raw_candidates}
 
         stats: dict = {
             "total": len(tradeable),
             "raw_candidates": len(raw_candidates),
-            "gainers_top_n": len(gainers),
+            "probe": len(probe_list),
+            "probe_cap": max_probe,
+            "sr_pass": 0,
             "sell_surge_fail": 0,
             "sl_cooldown": 0,
             "already_sent": 0,
@@ -170,7 +184,9 @@ class RollingLiveScanner:
         preloaded: dict[str, list[tuple]] = {hour_key: []}
         adapter = RawSurgeFeedAdapter()
 
-        for sym, pct_chg, _price in gainers:
+        # Step 2: 卖量门 —— 对探测集里每个币算 sr，收集所有通过者
+        sr_passed: list[tuple[str, float, float, float]] = []  # (sym, pct_chg, sr, yavg)
+        for sym, pct_chg, _price in probe_list:
             ck = self._cooldown_key(sym)
             if ck in self._sl_cooldown:
                 stats["sl_cooldown"] += 1
@@ -191,6 +207,17 @@ class RollingLiveScanner:
                 )
                 continue
 
+            sr_passed.append((sym, float(pct_chg), float(sr), float(yavg or 0.0)))
+
+        stats["sr_pass"] = len(sr_passed)
+
+        # Step 3: 排序截断 —— 按 sr 降序取 top_n（与 paper RawSurgeScanner 对齐）
+        # 将来若要改为「按涨幅降序」或其他策略，参见 docs/signal-scan-order.md。
+        sr_passed.sort(key=lambda x: x[2], reverse=True)
+        finalists = sr_passed[: self.config.top_n]
+
+        # 装载 adapter / preloaded 供 select_raw_surge_signals 使用
+        for sym, pct_chg, sr, yavg in finalists:
             listing = await self._get_listing_cached(sym)
             adapter.set_listing_date(sym, listing)
             adapter.set_sell_surge_detail(sym, now, sr, yavg)
@@ -243,12 +270,18 @@ class RollingLiveScanner:
 
     def _log_scan_summary(self, new_signals: int, stats: dict, startup: bool = False) -> None:
         prefix = "📡 R24 启动扫描" if startup else "📡 R24 扫描"
+        probe = stats.get("probe", 0)
+        probe_cap = stats.get("probe_cap")
+        probe_label = f"probe:{probe}"
+        if probe_cap is not None and stats.get("raw_candidates", 0) > probe_cap:
+            probe_label += f"(cap{probe_cap})"
         parts = [
             f"{stats['total']}币",
             f"raw≥{self.config.raw_min_pct_chg}%:{stats['raw_candidates']}",
-            f"top{self.config.top_n}:{stats['gainers_top_n']}",
+            probe_label,
+            f"sr>{self.config.raw_min_sell_surge:g}:{stats.get('sr_pass', 0)}",
             f"sr_fail:{stats.get('sell_surge_fail', 0)}",
-            f"select:{stats.get('select_pass', 0)}",
+            f"top{self.config.top_n}_select:{stats.get('select_pass', 0)}",
         ]
         if stats.get("already_sent", 0) > 0:
             parts.append(f"已发:{stats['already_sent']}")

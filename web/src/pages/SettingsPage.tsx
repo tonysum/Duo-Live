@@ -14,6 +14,13 @@ import {
 } from "lucide-react"
 import { StrategyQuotaCard } from "@/components/StrategyQuotaCard"
 
+/** Rolling 小数比例（如 tp_initial=0.12 表示 12%），与 min_pct_chg（已为百分点）不同 */
+function formatRollingFractionAsPct(f: number): string {
+    const n = Number(f)
+    if (Number.isNaN(n)) return "—"
+    return `${(n * 100).toFixed(2)}%`
+}
+
 /** Keys editable on Settings (subset of Config — excludes rolling snapshot). */
 type SettingsNumericKey =
     | "leverage"
@@ -439,8 +446,14 @@ export default function SettingsPage() {
                                             <ConfigParamRow label="扫描间隔" value={`${s.config.scan_interval_hours}h`} />
                                             <ConfigParamRow label="Top N" value={String(s.config.top_n)} />
                                             <ConfigParamRow label="最小涨幅" value={`${s.config.min_pct_chg}%`} />
-                                            <ConfigParamRow label="初始止盈" value={`${s.config.tp_initial}%`} />
-                                            <ConfigParamRow label="止损阈值" value={`${s.config.sl_threshold}%`} />
+                                            <ConfigParamRow
+                                                label="初始止盈"
+                                                value={formatRollingFractionAsPct(s.config.tp_initial)}
+                                            />
+                                            <ConfigParamRow
+                                                label="止损阈值"
+                                                value={formatRollingFractionAsPct(s.config.sl_threshold)}
+                                            />
                                             <ConfigParamRow label="最大持仓" value={String(s.config.max_positions)} />
                                             <ConfigParamRow label="每仓保证金" value={`${s.config.margin_per_position} USDT`} />
                                             <ConfigParamRow label="每日亏损限额" value={`${s.config.daily_loss_limit} USDT`} />
