@@ -44,13 +44,22 @@ class RollingLiveConfig:
     scan_interval_hours: int = 2          # 扫描间隔(小时)
     scan_delay_minutes: int = 1           # UTC 整点后延迟（分钟），再触发扫描
 
-    # Raw-surge：24h ticker 涨幅门槛与卖量暴涨（与 paper RawSurgeScanner 一致）
+    # 首道 24h ticker 涨幅门：与 moonshot ``scan_rolling_top_gainers(..., min_pct_chg=...)`` 及
+    # ``r24_raw_surge_params.json`` 的 ``min_pct_chg`` 对齐（不再单独用更松的 raw 门，除非显式覆盖）。
     raw_min_pct_chg: float = 10.0
+    # 与 moonshot ``RawSurgeR24Config.rolling_window_hours``：24=仅 24h ticker；回测/纸盘其他窗口
+    # 为逐币 K 线滚动涨幅（实盘当前仅实现 24）。
+    rolling_window_hours: int = 24
     raw_min_sell_surge: float = 10.0
+    #: 卖量 sr 上界，剔除基线过小导致的异常大倍数；None=不限制（见 moonshot ``raw_max_sell_surge``）
+    raw_max_sell_surge: float | None = None
+    #: 在「min_pct 合格且按涨幅排序」的集合上，最多探测多少只算卖量比（与 moonshot 预加载/JSON 一致；paper 对 24h 路等价于再截断 top 500 后再探测）
+    max_sr_probe: int = 500
+    #: 卖量门通过后的排序：``"sr"`` | ``"pct_log_sr"`` | ``"pct_log_sr_liq"``（与 moonshot 一致）
+    candidate_rank_mode: str = "pct_log_sr"
     raw_max_signals_per_hour: int | None = None
-    enable_sell_surge_gate: bool = False
-    sell_surge_threshold: float = 10.0
-    sell_surge_max: float = 1e12
+    #: 昨日小时均卖额下限（与 moonshot ``raw_min_yavg_sell_volume`` 同义）；``None``/0=不限制
+    raw_min_yavg_sell_volume: float | None = None
 
     # Main profit check（raw-surge 路径不使用；保留字段供配置兼容）
     enable_main_profit_check: bool = False
@@ -90,6 +99,18 @@ def _apply_rolling_field(cfg: RollingLiveConfig, name: str, value: object) -> No
             setattr(cfg, name, None)
         else:
             setattr(cfg, name, int(value))
+        return
+    if name == "raw_max_sell_surge":
+        if value is None:
+            setattr(cfg, name, None)
+        else:
+            setattr(cfg, name, float(value))
+        return
+    if name == "raw_min_yavg_sell_volume":
+        if value is None:
+            setattr(cfg, name, None)
+        else:
+            setattr(cfg, name, float(value))
         return
     if name == "main_profit_thresholds" and isinstance(value, list):
         pairs: list[tuple[int, int]] = []

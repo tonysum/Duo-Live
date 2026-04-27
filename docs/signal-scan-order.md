@@ -3,6 +3,8 @@
 本文档说明 `live/rolling_scanner.py` 中 R24 raw-surge 的候选筛选顺序与 `top_n` 截断时
 采用的排序依据，便于将来切换策略时有据可查。
 
+**更完整的「从简到繁」组合思路与 moonshot 对照**：见 [`r24-signal-scan-composition.md`](r24-signal-scan-composition.md)。
+
 ## 现行漏斗（与 duo-moonshot paper 对齐）
 
 ```
@@ -11,10 +13,11 @@
                                                             ▼ (2) 按涨幅倒序截 max_sr_probe（防 REST 洪水）
                                                             探测集
                                                             │
-                                                            ▼ (3) 逐个算 sell_surge_ratio，保留 sr > raw_min_sell_surge
-                                                            卖量合格集合（= 涨幅 ∩ 卖量）
+                                                            ▼ (3) 逐个算 sell_surge_ratio，保留 sr > raw_min_sell_surge，
+                                                            可选 ``raw_min_yavg_sell_volume`` 过滤昨均小时卖额
+                                                            卖量合格集合（= 涨幅 ∩ 卖量 [∩ 流动性]）
                                                             │
-                                                            ▼ (4) 按 sr 降序取 top_n
+                                                            ▼ (4) 按 ``candidate_rank_mode`` 取 top_n（``sr`` | ``pct_log_sr`` | ``pct_log_sr_liq``，与 moonshot 一致）
                                                             最终候选
                                                             │
                                                             ▼ (5) select_raw_surge_signals：min_pct_chg / 上市天数 / 可选卖量门
@@ -26,7 +29,13 @@
 
 ## `top_n` 截断时的排序依据
 
-**当前：按 `sell_surge_ratio` 降序（sr 越大越优先）**。
+由 ``RollingLiveConfig.candidate_rank_mode``（``data/config.json`` → ``rolling.candidate_rank_mode``）决定：
+
+| 值 | 排序键（降序） |
+|---|---|
+| ``sr`` | 仅卖量倍数，与 paper ``RawSurgeScanner`` 一致 |
+| ``pct_log_sr`` | ``pct_chg × log(1 + sr)`` |
+| ``pct_log_sr_liq`` | 上式再乘 ``max(log(1+yavg), 0.2)``（昨均小时卖额） |
 
 ### 为什么选 sr 降序
 
@@ -42,19 +51,11 @@
 | **复合：`pct_chg × sr`** 或 `log(sr) + α·pct_chg` | 兼顾涨幅与抛压 | 需回测定系数，增加维护成本 |
 | **按 `sr / pct_chg` 降序** | 找"涨得不太多但抛压异常高"的反转候选 | 和 raw-surge 语义偏离，不建议 |
 
-### 如何切换（仅一行改动）
+### 如何切换
 
-在 `live/rolling_scanner.py:_scan` 中找到：
-
-```python
-# Step 3: 排序截断 —— 按 sr 降序取 top_n（与 paper RawSurgeScanner 对齐）
-sr_passed.sort(key=lambda x: x[2], reverse=True)
-```
-
-- 改为按涨幅降序：`sr_passed.sort(key=lambda x: x[1], reverse=True)`
-- 改为复合：`sr_passed.sort(key=lambda x: x[1] * x[2], reverse=True)`
-
-切换时同步更新本文件的"当前"段落，并在 commit message 中说明动机。
+在 ``data/config.json`` 的 ``rolling`` 里设置 ``candidate_rank_mode``（或改
+``RollingLiveConfig`` 默认值）。新增模式需在 ``live/rolling_scanner.py`` 的
+``_candidate_rank_score`` 中实现。
 
 ## 相关配置项
 
@@ -62,6 +63,7 @@ sr_passed.sort(key=lambda x: x[2], reverse=True)
 |---|---|---|
 | `raw_min_pct_chg` | Step 1 涨幅门槛（百分点） | 10.0 |
 | `raw_min_sell_surge` | Step 3 卖量门槛（严格大于） | 10.0 |
+| `candidate_rank_mode` | Step 4 截断排序：`sr` 或 `pct_log_sr` | 见仓库 `config.json` |
 | `max_sr_probe`（可选，新增） | Step 2 探测集硬上限，防 REST 洪水 | 代码默认 50 |
 | `top_n` | Step 4 最终候选数 | 5 |
 | `min_pct_chg` | Step 5 涨幅二次门 | 10.0 |

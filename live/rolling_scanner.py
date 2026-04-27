@@ -2,21 +2,21 @@
 
 漏斗顺序（与 ``duo-moonshot/moonshot/paper/rolling_scanner.py`` 对齐）：
 
-1. GET /fapi/v1/ticker/24hr → 过滤 ``priceChangePercent >= raw_min_pct_chg``
-   得到「涨幅合格集合」（不截断 top_n）。
-2. 对集合内每币算 ``sell_surge_ratio_at_hour``（**与 paper 一致：用上一根已收盘 UTC 1h K**，
-   即 ``hour_floor - 1h``，而非当前正在进行的小时），保留 ``sr > raw_min_sell_surge``
-   者 → 得到「涨幅 ∩ 卖量 合格集合」。
-3. **按 sr 降序** 截 ``top_n`` 作为最终候选（排序依据见
-   ``docs/signal-scan-order.md``）。
-4. ``select_raw_surge_signals``：``min_pct_chg``、上市天数、可选二次卖量门控。
-5. 去重/冷却 → 入队。
+1. GET /fapi/v1/ticker/24hr → 过滤 ``priceChangePercent >= min_pct_chg``（与 moonshot
+   ``scan_rolling_top_gainers`` / ``r24_raw_surge`` JSON 的 ``min_pct_chg`` 首道门一致；``rolling_window_hours!=24`` 时当前仍用 24h 路径并打警告）。
+2. 按涨幅降序截断 **前 500**（与 paper ``top_n=500``），再按 ``max_sr_probe`` 限 REST 深度。
+3. 对集合内每币算 ``sell_surge_ratio_at_hour``（**与 paper 一致：用上一根已收盘 UTC 1h K**），
+   可选 **``raw_max_sell_surge``** 上界、``sr > raw_min_sell_surge`` → 可选 **``raw_min_yavg_sell_volume``** → sr 合格集。
+4. 按 ``candidate_rank_mode``（``sr`` / ``pct_log_sr`` / ``pct_log_sr_liq``）截 ``top_n``。
+5. ``select_raw_surge_signals``：（再次）``min_pct_chg``、上市天数、可选二次卖量门控。
+6. 去重/冷却 → 入队。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -29,6 +29,31 @@ from .rolling_config import RollingLiveConfig
 from .sell_surge_binance import load_listing_date_utc, sell_surge_ratio_at_hour
 
 logger = logging.getLogger(__name__)
+
+# 与 moonshot paper ``scan_rolling_top_gainers(..., top_n=500)`` 对齐
+ROLLING_24H_GAINERS_CAP = 500
+
+
+def _candidate_rank_score(
+    pct_chg: float,
+    sr: float,
+    mode: str,
+    yavg: float | None = None,
+) -> float:
+    """与 duo-moonshot ``r24_raw_surge_preload.candidate_rank_score`` 同口径。"""
+    m = (mode or "sr").strip().lower()
+    y = 0.0
+    if yavg is not None and yavg == yavg:
+        y = max(float(yavg), 0.0)
+    if m == "pct_log_sr":
+        return float(pct_chg) * math.log(1.0 + max(float(sr), 0.0))
+    if m == "pct_log_sr_liq":
+        base = float(pct_chg) * math.log(1.0 + max(float(sr), 0.0))
+        liq = math.log(1.0 + y)
+        return base * max(liq, 0.2)
+    if m != "sr":
+        logger.warning("unknown candidate_rank_mode %r — using sr", mode)
+    return float(sr)
 
 
 def _next_scan_utc(now: datetime, interval_h: int, delay_minutes: int) -> datetime:
@@ -79,11 +104,22 @@ class RollingLiveScanner:
 
     async def run_forever(self) -> None:
         self.running = True
+        rw = int(getattr(self.config, "rolling_window_hours", 24) or 24)
+        if rw != 24:
+            self._lp(
+                "RollingWindow=%dh：实盘当前按 24h ticker 与 moonshot 一致；非 24 的 K 线滚动涨幅未接交易所（仍用 24h）",
+                rw,
+            )
         self._lp(
-            "RollingLiveScanner started (R24 raw-surge: raw_min_pct_chg=%.1f%%, raw_min_sr=%.1f, top_n=%d, interval=%dh, delay=%dm)",
-            self.config.raw_min_pct_chg,
+            "RollingLiveScanner started (R24 raw-surge: min_pct_chg(24h)=%.1f%%, raw_min_sr=%.1f, "
+            "raw_max_sr=%s, min_yavg=%s, top_n=%d, max_sr_probe=%d, cap%d, interval=%dh, delay=%dm)",
+            self.config.min_pct_chg,
             self.config.raw_min_sell_surge,
+            str(getattr(self.config, "raw_max_sell_surge", None)),
+            str(getattr(self.config, "raw_min_yavg_sell_volume", None)),
             self.config.top_n,
+            int(getattr(self.config, "max_sr_probe", 500) or 500),
+            ROLLING_24H_GAINERS_CAP,
             self.config.scan_interval_hours,
             self.config.scan_delay_minutes,
         )
@@ -156,14 +192,16 @@ class RollingLiveScanner:
             if sym not in tradeable:
                 continue
             pct_chg = float(t.get("priceChangePercent", 0))
-            if pct_chg >= self.config.raw_min_pct_chg:
+            # 与 moonshot ``min_pct_chg`` 首道门一致（r24_raw_surge_params / paper）
+            if pct_chg >= self.config.min_pct_chg:
                 raw_candidates.append((sym, pct_chg, float(t.get("lastPrice", 0))))
 
         raw_candidates.sort(key=lambda x: x[1], reverse=True)
-
-        # REST 洪水保险：极端行情下涨幅合格币可能上百，每币要发 1h/1d K 线请求。
-        # 按涨幅倒序截到 MAX_SR_PROBE 再逐个算 sr。
-        max_probe = int(getattr(self.config, "max_sr_probe", 50) or 50)
+        # 与 paper ``scan_rolling_top_gainers(..., top_n=500)`` 对齐
+        raw_candidates = raw_candidates[:ROLLING_24H_GAINERS_CAP]
+        # REST 深度：与 JSON ``max_sr_probe`` 一致（回测/纸盘可设 90 等）
+        max_probe = int(getattr(self.config, "max_sr_probe", 500) or 500)
+        max_probe = max(1, min(max_probe, ROLLING_24H_GAINERS_CAP))
         probe_list = raw_candidates[:max_probe]
 
         price_map = {s: p for s, _, p in raw_candidates}
@@ -175,6 +213,8 @@ class RollingLiveScanner:
             "probe_cap": max_probe,
             "sr_pass": 0,
             "sell_surge_fail": 0,
+            "raw_max_sell_fail": 0,
+            "yavg_fail": 0,
             "sl_cooldown": 0,
             "already_sent": 0,
             "select_pass": 0,
@@ -200,6 +240,14 @@ class RollingLiveScanner:
                 continue
 
             sr, yavg = await sell_surge_ratio_at_hour(self.client, sym, prev_hour)
+            max_sr = getattr(self.config, "raw_max_sell_surge", None)
+            if sr is not None and max_sr is not None and sr > float(max_sr):
+                stats["raw_max_sell_fail"] = stats.get("raw_max_sell_fail", 0) + 1
+                self._lp(
+                    "  raw-surge SKIP %s +%.1f%%: sr=%.2f (> raw_max_sell_surge=%s)",
+                    sym, pct_chg, sr, max_sr,
+                )
+                continue
             if sr is None or sr <= self.config.raw_min_sell_surge:
                 stats["sell_surge_fail"] += 1
                 self._lp(
@@ -211,14 +259,32 @@ class RollingLiveScanner:
                 )
                 continue
 
-            sr_passed.append((sym, float(pct_chg), float(sr), float(yavg or 0.0)))
+            min_yavg = getattr(self.config, "raw_min_yavg_sell_volume", None)
+            if min_yavg is not None and float(min_yavg) > 0:
+                yv = float(yavg) if yavg is not None else -1.0
+                if yavg is None or yv < float(min_yavg):
+                    stats["yavg_fail"] = stats.get("yavg_fail", 0) + 1
+                    self._lp(
+                        "  raw-surge SKIP %s +%.1f%%: yavg=%s (need >= %.1f)",
+                        sym,
+                        pct_chg,
+                        f"{yavg:.2f}" if yavg is not None else "None",
+                        float(min_yavg),
+                    )
+                    continue
+
+            sr_passed.append((sym, float(pct_chg), float(sr), yavg if yavg is not None else None))
 
         stats["sr_pass"] = len(sr_passed)
 
-        # Step 3: 排序截断 —— 按 sr 降序取 top_n（与 paper RawSurgeScanner 对齐）
-        # 将来若要改为「按涨幅降序」或其他策略，参见 docs/signal-scan-order.md。
-        sr_passed.sort(key=lambda x: x[2], reverse=True)
+        # Step 3: 排序截断 —— 默认按 sr 降序（与 paper 一致）；可配置为 pct×log(1+sr) 等，见 candidate_rank_mode
+        rank_mode = getattr(self.config, "candidate_rank_mode", "sr")
+        sr_passed.sort(
+            key=lambda x: _candidate_rank_score(x[1], x[2], rank_mode, x[3]),
+            reverse=True,
+        )
         finalists = sr_passed[: self.config.top_n]
+        stats["rank_mode"] = rank_mode
 
         # 装载 adapter / preloaded 供 select_raw_surge_signals 使用
         for sym, pct_chg, sr, yavg in finalists:
@@ -281,8 +347,10 @@ class RollingLiveScanner:
             probe_label += f"(cap{probe_cap})"
         parts = [
             f"{stats['total']}币",
-            f"raw≥{self.config.raw_min_pct_chg}%:{stats['raw_candidates']}",
+            f"min%≥{self.config.min_pct_chg}%:{stats['raw_candidates']}",
             probe_label,
+            f"sr_max_fail:{stats.get('raw_max_sell_fail', 0)}",
+            f"yavg_fail:{stats.get('yavg_fail', 0)}",
             f"sr>{self.config.raw_min_sell_surge:g}:{stats.get('sr_pass', 0)}",
             f"sr_fail:{stats.get('sell_surge_fail', 0)}",
             f"top{self.config.top_n}_select:{stats.get('select_pass', 0)}",
@@ -291,6 +359,7 @@ class RollingLiveScanner:
             parts.append(f"已发:{stats['already_sent']}")
         if stats.get("sl_cooldown", 0) > 0:
             parts.append(f"SL冷:{stats['sl_cooldown']}")
+        parts.append(f"rank:{stats.get('rank_mode', 'sr')}")
         parts.append(f"{new_signals} new")
         self._lp("%s: %s", prefix, " | ".join(parts))
 

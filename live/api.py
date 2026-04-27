@@ -152,10 +152,9 @@ class RollingParamsResponse(BaseModel):
     min_pct_chg: float
     raw_min_pct_chg: float
     raw_min_sell_surge: float
+    candidate_rank_mode: str = "sr"
+    raw_min_yavg_sell_volume: float | None = None
     raw_max_signals_per_hour: int | None = None
-    enable_sell_surge_gate: bool = False
-    sell_surge_threshold: float = 10.0
-    sell_surge_max: float = 1e12
     scan_delay_minutes: int = 1
     min_listed_days: int
     signal_cooldown_hours: int
@@ -508,10 +507,9 @@ def _rolling_params_response(rc: object | None) -> RollingParamsResponse:
         min_pct_chg=r.min_pct_chg,
         raw_min_pct_chg=r.raw_min_pct_chg,
         raw_min_sell_surge=r.raw_min_sell_surge,
+        candidate_rank_mode=str(getattr(r, "candidate_rank_mode", None) or "sr"),
+        raw_min_yavg_sell_volume=getattr(r, "raw_min_yavg_sell_volume", None),
         raw_max_signals_per_hour=r.raw_max_signals_per_hour,
-        enable_sell_surge_gate=r.enable_sell_surge_gate,
-        sell_surge_threshold=r.sell_surge_threshold,
-        sell_surge_max=r.sell_surge_max,
         scan_delay_minutes=r.scan_delay_minutes,
         min_listed_days=r.min_listed_days,
         signal_cooldown_hours=r.signal_cooldown_hours,

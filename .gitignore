@@ -10,7 +10,7 @@ tests/
 data/*.db
 data/deployed_at.txt
 *.pdf
-/logs/
+logs/*.log
 
 # Environment
 .env
@@ -22,8 +22,15 @@ venv/
 .vscode/
 *.swp
 .DS_Store
-.agents
+.agents/
 .agents
 .kiro/
 
-AE Server Script.py
+# Cursor
+.cursor/
+.cursor/skills/
+.cursor/rules/
+.cursor/commands/
+.cursor/commands/
+
+.pytest_cache/

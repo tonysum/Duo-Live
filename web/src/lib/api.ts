@@ -83,10 +83,11 @@ export interface RollingRuntimeParams {
   min_pct_chg: number;
   raw_min_pct_chg: number;
   raw_min_sell_surge: number;
+  /** 卖量门后截断排序：sr | pct_log_sr | pct_log_sr_liq（与 moonshot 一致） */
+  candidate_rank_mode: string;
+  /** 昨均小时卖额下限；null=不限制 */
+  raw_min_yavg_sell_volume: number | null;
   raw_max_signals_per_hour: number | null;
-  enable_sell_surge_gate: boolean;
-  sell_surge_threshold: number;
-  sell_surge_max: number;
   scan_delay_minutes: number;
   min_listed_days: number;
   signal_cooldown_hours: number;

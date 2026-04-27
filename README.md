@@ -39,7 +39,7 @@
 
 - **全市场 `/fapi/v1/ticker/24hr`** 拉取后，按 **`raw_min_pct_chg`** 取候选，再取 **Top N**（`top_n`）。
 - 对每个候选计算 **小时主动卖量 quote / 昨日日均每小时卖量**（`sell_surge_ratio_at_hour`），必须 **>** **`raw_min_sell_surge`**（与 paper `RawSurgeScanner` 一致）。
-- 再经 **`select_raw_surge_signals`**：`min_pct_chg`、上市天数、可选二次卖量门控（`enable_sell_surge_gate` 等）。
+- 再经 **`select_raw_surge_signals`**：`min_pct_chg`、上市天数等。
 - 按 **`scan_interval_hours`** 与 **`scan_delay_minutes`**（UTC 整点后延迟）对齐扫描；**启动时立刻扫一次**。
 - `SurgeSignal.surge_ratio` 仍为 **24h 涨跌幅 %**；`sell_surge_ratio` / `yesterday_avg_hour_sell_quote` 可选记录卖量信息。
 - **同币种信号冷却**：`signal_cooldown_hours`；**止损当日** 同一标的可经 `add_sl_cooldown` 屏蔽再入场。
@@ -135,7 +135,7 @@ duo-live/
 
 ## 信号与入场流程
 
-1. **扫描**：`RollingLiveScanner` 请求 24hr ticker → **`raw_min_pct_chg`** 候选 → 排序取 **`top_n`** → 每币卖量比 **`> raw_min_sell_surge`** → **`select_raw_surge_signals`**（`min_pct_chg`、上市天数、可选 `enable_sell_surge_gate`）→ `SurgeSignal` 入队。  
+1. **扫描**：`RollingLiveScanner` 请求 24hr ticker → **`min_pct_chg`** 等首道门 → 截断与卖量比门 → **`select_raw_surge_signals`**（`min_pct_chg`、上市天数等）→ `SurgeSignal` 入队。  
 2. **消费**：`_process_signals` 合并队列 → **等待 10s** → 拉取交易所持仓 → 去掉已持仓品种 → 按 `max_positions` 截断 → **仅当 `auto_trade_enabled`** 时对每条信号调用执行逻辑。  
 3. **过滤**：`RollingLiveStrategy.filter_entry`（上市天数、`TradeStore` 信号冷却；**raw-surge 路径不做主力获利门控**）→ `EntryDecision`（默认 SHORT，TP/SL 百分比来自 `tp_initial`×100、`sl_threshold`×100）。  
 4. **下单**：`LiveOrderExecutor` 等路径挂限价单；监控跟踪 `deferred_tp_sl`，成交后挂条件止盈止损。

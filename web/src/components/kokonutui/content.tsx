@@ -63,6 +63,19 @@ function RollingRuntimeBlock({ rolling }: { rolling: RollingRuntimeParams }) {
           value={`> ${rolling.raw_min_sell_surge}`}
         />
         <ParamRow
+          label="昨均小时卖额下限"
+          value={
+            rolling.raw_min_yavg_sell_volume != null &&
+            rolling.raw_min_yavg_sell_volume > 0
+              ? `≥ ${rolling.raw_min_yavg_sell_volume}`
+              : "—"
+          }
+        />
+        <ParamRow
+          label="截断排序"
+          value={rolling.candidate_rank_mode}
+        />
+        <ParamRow
           label="策略层涨幅"
           value={`≥ ${rolling.min_pct_chg}%`}
         />

@@ -55,6 +55,22 @@ def select_raw_surge_signals(
         else:
             rows.append((item[0], item[1], None, None))
 
+    # 与 moonshot ``RawSurgeRollingStrategy.select_signals``：同小时同 symbol 去重，保留更优卖量比
+    merged: dict[str, tuple] = {}
+    merge_order: list[str] = []
+    for tup in rows:
+        sym = tup[0]
+        if sym not in merged:
+            merged[sym] = tup
+            merge_order.append(sym)
+            continue
+        cur = merged[sym]
+        ns = tup[2] if len(tup) > 2 and tup[2] is not None else float("-inf")
+        os_ = cur[2] if len(cur) > 2 and cur[2] is not None else float("-inf")
+        if ns > os_ or (ns == os_ and tup[1] > cur[1]):
+            merged[sym] = tup
+    rows = [merged[s] for s in merge_order]
+
     if cfg.raw_max_signals_per_hour is not None:
         rows = rows[: cfg.raw_max_signals_per_hour]
 
@@ -93,31 +109,6 @@ def select_raw_surge_signals(
                 sr, yavg = loader(symbol, dt)
                 detail["sell_surge_ratio"] = sr
                 detail["yesterday_avg_hour_sell_volume"] = yavg
-
-        if cfg.enable_sell_surge_gate:
-            if detail.get("sell_surge_ratio") is None:
-                loader = getattr(feed, "load_sell_surge_detail", None)
-                if loader is None:
-                    detail["filter_result"] = "剔除:卖量门控需要 feed"
-                    last_signal_details.append(detail)
-                    continue
-                sr, yavg = loader(symbol, dt)
-                detail["sell_surge_ratio"] = sr
-                detail["yesterday_avg_hour_sell_volume"] = yavg
-
-            sr = detail.get("sell_surge_ratio")
-            if sr is None:
-                detail["filter_result"] = "剔除:卖量数据不足"
-                last_signal_details.append(detail)
-                continue
-            if sr < cfg.sell_surge_threshold:
-                detail["filter_result"] = "剔除:卖量未暴涨"
-                last_signal_details.append(detail)
-                continue
-            if sr > cfg.sell_surge_max:
-                detail["filter_result"] = "剔除:卖量倍数过高"
-                last_signal_details.append(detail)
-                continue
 
         last_signal_details.append(detail)
         results.append((symbol, pct_chg))
