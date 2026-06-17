@@ -597,10 +597,6 @@ export default function Content() {
                 value={`${runtimeCfg.monitor_interval_seconds}s`}
               />
               <ParamRow
-                label="模拟盘 paper_trading"
-                value={runtimeCfg.paper_trading ? "开（不真实下单）" : "关"}
-              />
-              <ParamRow
                 label="配置声明 strategies"
                 value={
                   runtimeCfg.strategies?.length

@@ -258,7 +258,7 @@ duo-live 自动交易系统报警
         """Max hold time exceeded, market close."""
         await self.send(
             f"⏰ <b>超时平仓</b>\n"
-            f"  {symbol} 持仓 {hours}h 已市价平仓"
+            f"  {symbol} 持仓 {hours}h 已限价平仓"
         )
 
     async def notify_daily_loss_limit(self, daily_pnl: str, limit: str):

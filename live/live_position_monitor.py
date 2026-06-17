@@ -4,7 +4,7 @@ Flow:
   1. Executor places entry LIMIT order only
   2. Monitor polls for entry FILLED → then places TP/SL algo orders
   3. Monitor tracks TP/SL triggers → auto-cancels the other
-  4. Max hold time → force market close
+  4. Max hold time → force limit close
 
 Usage:
     monitor = LivePositionMonitor(client, executor, config)
@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 from .binance_client import BinanceFuturesClient, BinanceAPIError
 from .live_config import LiveTradingConfig
+from .live_executor import is_sl_algo_type, is_tp_algo_type
 
 logger = logging.getLogger(__name__)
 
@@ -433,8 +434,8 @@ class LivePositionMonitor:
         duplicates_cancelled = 0
         for sym, orders in orders_by_symbol.items():
             # Group by order type
-            tp_orders = [o for o in orders if o.order_type == "TAKE_PROFIT_MARKET"]
-            sl_orders = [o for o in orders if o.order_type == "STOP_MARKET"]
+            tp_orders = [o for o in orders if is_tp_algo_type(o.order_type)]
+            sl_orders = [o for o in orders if is_sl_algo_type(o.order_type)]
             
             # If multiple TP orders exist, keep only the first one
             if len(tp_orders) > 1:
@@ -780,7 +781,7 @@ class LivePositionMonitor:
             _max_hold_h = _rc.max_hold_days * 24 if _rc else 264
             if hold_hours >= _max_hold_h:
                 logger.warning(
-                    "⏰ 持仓超时 (%dh): %s — 市价平仓",
+                    "⏰ 持仓超时 (%dh): %s — 限价平仓",
                     _max_hold_h, pos.symbol,
                 )
                 if self.notifier:
@@ -823,7 +824,7 @@ class LivePositionMonitor:
             logger.error("❌ 挂出 TP/SL 失败 %s: %s", pos.symbol, e)
 
     async def _force_close(self, pos: TrackedPosition):
-        """Force close a position with a market order and cancel TP/SL.
+        """Force close a position with a limit order and cancel TP/SL.
         
         🔧 改进（从 AE Server 移植）：
         1. 平仓前先取消所有未成交订单
@@ -941,27 +942,29 @@ class LivePositionMonitor:
             is_hedge = await self.client.get_position_mode()
             ps = pos.side if is_hedge else "BOTH"
             
-            # 先尝试带reduceOnly
+            # 先尝试带 reduceOnly 的限价平仓
             try:
-                await self.client.place_market_close(
+                await self.client.place_limit_close(
                     symbol=symbol,
                     side=close_side,
                     quantity=str(quantity),
                     position_side=ps,
                 )
-                logger.info("✅ 市价平仓成功: %s", symbol)
+                logger.info("✅ 限价平仓成功: %s", symbol)
             except BinanceAPIError as reduce_error:
                 if 'ReduceOnly Order is rejected' in str(reduce_error):
-                    logger.warning(f"⚠️ {symbol} reduceOnly平仓被拒绝，尝试普通市价单")
-                    # 重试：不带reduceOnly
+                    logger.warning(f"⚠️ {symbol} reduceOnly平仓被拒绝，尝试普通限价单")
+                    close_price = await self.client.resolve_limit_close_price(symbol, close_side)
                     await self.client.place_order(
                         symbol=symbol,
                         side=close_side,
                         positionSide=ps,
-                        type="MARKET",
+                        type="LIMIT",
+                        timeInForce="GTC",
                         quantity=str(quantity),
+                        price=close_price,
                     )
-                    logger.info("✅ 市价平仓成功（普通市价单）: %s", symbol)
+                    logger.info("✅ 限价平仓成功（普通限价单）: %s", symbol)
                 elif 'Margin is insufficient' in str(reduce_error):
                     # 🔧 步骤6：支持分批平仓（保证金不足时）
                     logger.error(f"❌ {symbol} 保证金不足，尝试分批平仓")
@@ -979,13 +982,16 @@ class LivePositionMonitor:
                     else:
                         half_quantity = round(half_quantity, 3)
 
+                    close_price = await self.client.resolve_limit_close_price(symbol, close_side)
                     # 平仓一半
                     await self.client.place_order(
                         symbol=symbol,
                         side=close_side,
                         positionSide=ps,
-                        type="MARKET",
+                        type="LIMIT",
+                        timeInForce="GTC",
                         quantity=str(half_quantity),
+                        price=close_price,
                     )
                     logger.info(f"✅ {symbol} 成功平仓一半仓位 ({half_quantity})，等待再次尝试")
 
@@ -1017,13 +1023,18 @@ class LivePositionMonitor:
                             logger.info(f"📊 {symbol} 重新获取剩余持仓: {remaining_quantity}")
 
                             if remaining_quantity > 0:
+                                remaining_price = await self.client.resolve_limit_close_price(
+                                    symbol, close_side,
+                                )
                                 # 平仓剩余仓位
                                 await self.client.place_order(
                                     symbol=symbol,
                                     side=close_side,
                                     positionSide=ps,
-                                    type="MARKET",
+                                    type="LIMIT",
+                                    timeInForce="GTC",
                                     quantity=str(remaining_quantity),
+                                    price=remaining_price,
                                 )
                                 logger.info(f"✅ {symbol} 成功平仓剩余仓位 ({remaining_quantity})")
                             else:
@@ -1046,7 +1057,7 @@ class LivePositionMonitor:
                     raise reduce_error
                 
         except Exception as e:
-            logger.error("❌ 市价平仓失败 %s: %s", symbol, e)
+            logger.error("❌ 限价平仓失败 %s: %s", symbol, e)
             # 发送紧急通知（同时 Telegram + 邮件）
             if self.notifier:
                 await self.notifier.send_critical_alert(
@@ -1143,8 +1154,10 @@ class LivePositionMonitor:
         # ── Check if order already exists (prevent duplicate orders) ──
         try:
             algo_orders = await self.client.get_open_algo_orders(pos.symbol)
-            target_type = "TAKE_PROFIT_MARKET" if order_type == "tp" else "STOP_MARKET"
-            existing_orders = [o for o in algo_orders if o.order_type == target_type]
+            existing_orders = [
+                o for o in algo_orders
+                if (is_tp_algo_type(o.order_type) if order_type == "tp" else is_sl_algo_type(o.order_type))
+            ]
             
             if existing_orders:
                 # Order already exists, update our tracking
@@ -1196,7 +1209,6 @@ class LivePositionMonitor:
                 price = pos.entry_price * (1 + pct / 100)
             else:
                 price = pos.entry_price * (1 - pct / 100)
-            algo_type = "TAKE_PROFIT_MARKET"
             prefix = "tp"
             label = "止盈"
         else:
@@ -1206,7 +1218,6 @@ class LivePositionMonitor:
                 price = pos.entry_price * (1 - pct / 100)
             else:
                 price = pos.entry_price * (1 + pct / 100)
-            algo_type = "STOP_MARKET"
             prefix = "sl"
             label = "止损"
 
@@ -1228,17 +1239,14 @@ class LivePositionMonitor:
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
-            new_order = await self.client.place_algo_order(
+            new_order = await self.executor.place_tp_sl_algo_order(
                 symbol=pos.symbol,
-                side=close_side,
-                positionSide=ps,
-                type=algo_type,
-                triggerPrice=str(price),
+                close_side=close_side,
+                pos_side=ps,
+                kind=order_type,
+                trigger_price=str(price),
                 quantity=rounded_qty,
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"{prefix}_{order_prefix}",
+                client_algo_id=f"{prefix}_{order_prefix}",
             )
 
             if order_type == "tp":
@@ -1504,17 +1512,14 @@ class LivePositionMonitor:
             rounded_qty = await self._round_quantity(pos.symbol, str(abs(actual_qty)))
             order_prefix = uuid.uuid4().hex[:8]
 
-            sl_order = await self.client.place_algo_order(
+            sl_order = await self.executor.place_tp_sl_algo_order(
                 symbol=pos.symbol,
-                side=close_side,
-                positionSide=ps,
-                type="STOP_MARKET",
-                triggerPrice=str(new_sl_price),
+                close_side=close_side,
+                pos_side=ps,
+                kind="sl",
+                trigger_price=str(new_sl_price),
                 quantity=str(rounded_qty),
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"sl_{order_prefix}",
+                client_algo_id=f"sl_{order_prefix}",
             )
             pos.sl_algo_id = sl_order.algo_id
             logger.info(
@@ -1595,17 +1600,14 @@ class LivePositionMonitor:
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
-            tp_order = await self.client.place_algo_order(
+            tp_order = await self.executor.place_tp_sl_algo_order(
                 symbol=pos.symbol,
-                side=close_side,
-                positionSide=ps,
-                type="TAKE_PROFIT_MARKET",
-                triggerPrice=new_tp_str,
+                close_side=close_side,
+                pos_side=ps,
+                kind="tp",
+                trigger_price=new_tp_str,
                 quantity=rounded_qty,
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"tp_{order_prefix}",
+                client_algo_id=f"tp_{order_prefix}",
             )
             pos.tp_algo_id = tp_order.algo_id
             logger.info(
@@ -1687,17 +1689,14 @@ class LivePositionMonitor:
             order_prefix = uuid.uuid4().hex[:8]
 
             rounded_qty = await self._round_quantity(pos.symbol, pos.quantity)
-            tp_order = await self.client.place_algo_order(
+            tp_order = await self.executor.place_tp_sl_algo_order(
                 symbol=pos.symbol,
-                side=close_side,
-                positionSide=ps,
-                type="TAKE_PROFIT_MARKET",
-                triggerPrice=str(restore_price),
+                close_side=close_side,
+                pos_side=ps,
+                kind="tp",
+                trigger_price=str(restore_price),
                 quantity=rounded_qty,
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"tp_{order_prefix}",
+                client_algo_id=f"tp_{order_prefix}",
             )
             pos.tp_algo_id = tp_order.algo_id
             pos.current_tp_pct = fallback_pct

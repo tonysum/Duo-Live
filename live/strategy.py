@@ -49,7 +49,7 @@ class PositionAction:
 
     action values:
       "hold"         — keep position as-is
-      "close"        — force close (market order)
+      "close"        — force close (limit order)
       "adjust_tp"    — replace TP order with new_tp_pct
       "add_position" — add to existing position (加仓)
     """

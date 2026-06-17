@@ -7,7 +7,7 @@ Market data endpoints (no authentication):
 
 Authenticated endpoints (HMAC-SHA256):
   - place_order()       — regular orders (LIMIT, MARKET)
-  - place_algo_order()  — conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET)
+  - place_algo_order()  — conditional orders (STOP, TAKE_PROFIT, etc.)
   - query_order()
   - get_open_orders()
   - get_position_risk()
@@ -25,7 +25,7 @@ import re
 import time
 import urllib.parse
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 
 import httpx
@@ -347,29 +347,111 @@ class BinanceFuturesClient:
         data = await self._request("DELETE", "/fapi/v1/order", params, signed=True)
         return OrderResponse.model_validate(data)
 
-    async def place_market_close(
+    @staticmethod
+    def _round_price_to_tick(
+        price: Decimal,
+        tick_size: Decimal | None,
+        precision: int,
+        rounding,
+    ) -> Decimal:
+        """Round price to tickSize or pricePrecision."""
+        if tick_size is not None and tick_size > 0:
+            rounded = (price / tick_size).to_integral_value(rounding=rounding) * tick_size
+            tick_normalized = tick_size.normalize()
+            _sign, _digits, tick_exp = tick_normalized.as_tuple()
+            if tick_exp < 0:
+                return rounded.quantize(Decimal(10) ** tick_exp, rounding=rounding)
+            return rounded.quantize(Decimal("1"), rounding=rounding)
+        fmt = Decimal("1") if precision == 0 else Decimal("1e-{}".format(precision))
+        return price.quantize(fmt, rounding=rounding)
+
+    async def _get_price_filter(self, symbol: str) -> tuple[Decimal | None, int]:
+        """Return (tick_size, price_precision) for a symbol."""
+        info = await self.get_exchange_info()
+        for s in info.symbols:
+            if s.symbol != symbol:
+                continue
+            tick_size = None
+            for f in s.filters:
+                if f.filter_type.value == "PRICE_FILTER" and f.tick_size is not None:
+                    tick_size = f.tick_size
+                    break
+            return tick_size, s.price_precision
+        raise ValueError(f"Symbol {symbol} not found in exchange info")
+
+    async def resolve_limit_close_price(self, symbol: str, side: str) -> str:
+        """Mark price rounded aggressively for limit close fill.
+
+        SELL (close long): round down; BUY (close short): round up.
+        """
+        premium = await self.get_premium_index(symbol)
+        mark = Decimal(str(premium["markPrice"]))
+        tick_size, price_prec = await self._get_price_filter(symbol)
+        rounding = ROUND_DOWN if side.upper() == "SELL" else ROUND_UP
+        rounded = self._round_price_to_tick(mark, tick_size, price_prec, rounding)
+        return str(rounded)
+
+    async def place_limit_close(
         self,
         symbol: str,
         side: str,
         quantity: str,
         position_side: str = "BOTH",
+        price: str | None = None,
+        wait_fill: bool = True,
+        wait_timeout: float = 15.0,
     ) -> OrderResponse:
-        """Place a MARKET order to close (reduce) an existing position.
+        """Place a LIMIT order to close (reduce) an existing position.
 
         Args:
             symbol: e.g. "BTCUSDT"
             side: "BUY" to close SHORT, "SELL" to close LONG
             quantity: amount to close
             position_side: "BOTH" for one-way, "LONG"/"SHORT" for hedge
+            price: limit price; defaults to mark price if omitted
+            wait_fill: poll until filled or timeout
+            wait_timeout: seconds to wait when wait_fill is True
         """
-        return await self.place_order(
+        if price is None:
+            price = await self.resolve_limit_close_price(symbol, side)
+
+        order = await self.place_order(
             symbol=symbol,
             side=side,
             positionSide=position_side,
-            type="MARKET",
+            type="LIMIT",
+            timeInForce="GTC",
             quantity=quantity,
+            price=price,
             reduceOnly="true",
         )
+        logger.info(
+            "📤 限价平仓已提交: %s %s qty=%s price=%s orderId=%s",
+            symbol, side, quantity, price, order.order_id,
+        )
+
+        if not wait_fill or order.status in ("FILLED", "PARTIALLY_FILLED"):
+            return order
+
+        deadline = time.monotonic() + wait_timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            order = await self.query_order(symbol, order_id=order.order_id)
+            if order.status in ("FILLED", "PARTIALLY_FILLED"):
+                logger.info("✅ 限价平仓成交: %s orderId=%s", symbol, order.order_id)
+                break
+            if order.status in ("CANCELED", "EXPIRED", "REJECTED"):
+                logger.warning(
+                    "⚠️ 限价平仓未成交: %s orderId=%s status=%s",
+                    symbol, order.order_id, order.status,
+                )
+                break
+        else:
+            logger.warning(
+                "⚠️ 限价平仓等待超时 (%ss): %s orderId=%s status=%s",
+                wait_timeout, symbol, order.order_id, order.status,
+            )
+        return order
 
     # =========================================================================
     # Account Endpoints (authenticated)
@@ -517,7 +599,7 @@ class BinanceFuturesClient:
         return total
 
     # =========================================================================
-    # Algo Order Endpoints (conditional orders — STOP_MARKET, TAKE_PROFIT_MARKET)
+    # Algo Order Endpoints (conditional orders — STOP, TAKE_PROFIT, etc.)
     # =========================================================================
 
     async def place_algo_order(self, **kwargs: Any) -> AlgoOrderResponse:

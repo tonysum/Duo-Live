@@ -23,6 +23,7 @@ def config():
 def _make_monitor(config, **overrides):
     client = AsyncMock()
     executor = MagicMock()
+    executor.place_tp_sl_algo_order = AsyncMock()
     notifier = AsyncMock()
     notifier.notify_tp_triggered = AsyncMock()
     notifier.notify_sl_triggered = AsyncMock()
@@ -243,15 +244,15 @@ class TestRePlaceSingleOrder:
 
         new_order = MagicMock()
         new_order.algo_id = 999
-        mon.client.place_algo_order = AsyncMock(return_value=new_order)
+        mon.executor.place_tp_sl_algo_order = AsyncMock(return_value=new_order)
 
         await mon._re_place_single_order(pos, "tp")
 
         assert pos.tp_algo_id == 999
-        mon.client.place_algo_order.assert_called_once()
-        call_kwargs = mon.client.place_algo_order.call_args.kwargs
-        assert call_kwargs["type"] == "TAKE_PROFIT_MARKET"
-        assert call_kwargs["side"] == "BUY"  # Close side for SHORT
+        mon.executor.place_tp_sl_algo_order.assert_called_once()
+        call_kwargs = mon.executor.place_tp_sl_algo_order.call_args.kwargs
+        assert call_kwargs["kind"] == "tp"
+        assert call_kwargs["close_side"] == "BUY"  # Close side for SHORT
 
     @pytest.mark.asyncio
     async def test_re_place_sl_long(self, config):
@@ -266,14 +267,14 @@ class TestRePlaceSingleOrder:
 
         new_order = MagicMock()
         new_order.algo_id = 888
-        mon.client.place_algo_order = AsyncMock(return_value=new_order)
+        mon.executor.place_tp_sl_algo_order = AsyncMock(return_value=new_order)
 
         await mon._re_place_single_order(pos, "sl")
 
         assert pos.sl_algo_id == 888
-        call_kwargs = mon.client.place_algo_order.call_args.kwargs
-        assert call_kwargs["type"] == "STOP_MARKET"
-        assert call_kwargs["side"] == "SELL"  # Close side for LONG
+        call_kwargs = mon.executor.place_tp_sl_algo_order.call_args.kwargs
+        assert call_kwargs["kind"] == "sl"
+        assert call_kwargs["close_side"] == "SELL"  # Close side for LONG
 
     @pytest.mark.asyncio
     async def test_re_place_fails_gracefully(self, config):
@@ -285,7 +286,7 @@ class TestRePlaceSingleOrder:
         mon._round_trigger_price = AsyncMock(side_effect=lambda s, p: p)
         mon._round_quantity = AsyncMock(side_effect=lambda s, q: q)
         mon.client.get_position_mode = AsyncMock(return_value=False)
-        mon.client.place_algo_order = AsyncMock(side_effect=Exception("API error"))
+        mon.executor.place_tp_sl_algo_order = AsyncMock(side_effect=Exception("API error"))
 
         await mon._re_place_single_order(pos, "tp")
 
@@ -304,9 +305,7 @@ class TestRePlaceSingleOrder:
 
         await mon._re_place_single_order(pos, "tp")
 
-        # Nothing should have been called
-        mon.client.place_algo_order = AsyncMock()
-        mon.client.place_algo_order.assert_not_called()
+        mon.executor.place_tp_sl_algo_order.assert_not_called()
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ Usage:
         [--long] [--tp N] [--sl N] [--leverage N] [--margin N]
     python -m live orders [symbol]                     # 查看挂单
     python -m live positions [symbol]                  # 查看持仓
-    python -m live close <symbol>                      # 市价平仓
+    python -m live close <symbol>                      # 限价平仓
     python -m live tp <symbol> <price>                 # 手动挂止盈
     python -m live sl <symbol> <price>                 # 手动挂止损
     python -m live cancel <symbol> <id>                # 取消单个订单
@@ -409,11 +409,11 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
                 print(f"📊 平仓: {sym} {direction}")
                 print(f"   数量={qty}, 标记价={pos.mark_price}, 未实现盈亏={pos.unrealized_profit}")
 
-                result = await client.place_market_close(
+                result = await client.place_limit_close(
                     symbol=sym, side=close_side,
                     quantity=qty, position_side=pos.position_side,
                 )
-                print(f"\n✅ 市价平仓成功: orderId={result.order_id}, status={result.status}")
+                print(f"\n✅ 限价平仓成功: orderId={result.order_id}, status={result.status}")
 
                 # Cancel remaining TP/SL algo orders
                 try:
@@ -461,13 +461,16 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
                 direction = "LONG" if is_long else "SHORT"
 
                 if cmd == "tp":
-                    algo_type = "TAKE_PROFIT_MARKET"
+                    algo_type = "TAKE_PROFIT"
                     label = "止盈"
                 else:
-                    algo_type = "STOP_MARKET"
+                    algo_type = "STOP"
                     label = "止损"
 
-                print(f"📋 挂{label}单: {sym} {direction}, 数量={qty}, 触发价={trigger_price}")
+                print(
+                    f"📋 挂{label}限价单: {sym} {direction}, "
+                    f"数量={qty}, 触发价={trigger_price}, 限价={trigger_price}"
+                )
 
                 result = await client.place_algo_order(
                     symbol=sym,
@@ -475,12 +478,17 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
                     positionSide=pos.position_side,
                     type=algo_type,
                     triggerPrice=trigger_price,
+                    price=trigger_price,
+                    timeInForce="GTC",
                     quantity=qty,
                     reduceOnly="true",
                     priceProtect="true",
                     workingType="CONTRACT_PRICE",
                 )
-                print(f"✅ {label}单已挂出: algoId={result.algo_id}, triggerPrice={trigger_price}")
+                print(
+                    f"✅ {label}限价单已挂出: algoId={result.algo_id}, "
+                    f"triggerPrice={trigger_price}, price={trigger_price}"
+                )
 
         asyncio.run(_tp_sl())
 
@@ -639,7 +647,7 @@ def _dispatch(cmd: str, config: LiveTradingConfig):
         print("    [qty] [--long] [--tp N] [--sl N] [--leverage N] [--margin N]")
         print("  orders [symbol]         查看挂单")
         print("  positions [symbol]      查看持仓")
-        print("  close <symbol>          市价平仓")
+        print("  close <symbol>          限价平仓")
         print("  tp <symbol> <price>     手动挂止盈")
         print("  sl <symbol> <price>     手动挂止损")
         print("  cancel <sym> <id>       取消单个订单")

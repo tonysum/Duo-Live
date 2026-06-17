@@ -320,11 +320,11 @@ class TelegramBot:
         if pos:
             try:
                 await self.trader.live_monitor._force_close(pos)
-                return f"✅ 已发送 {symbol} 市价平仓指令"
+                return f"✅ 已发送 {symbol} 限价平仓指令"
             except Exception as e:
                 return f"❌ 平仓失败: {e}"
 
-        # Direct market close if not in monitor
+        # Direct limit close if not in monitor
         try:
             all_pos = await self.trader.client.get_position_risk(symbol)
             for p in all_pos:
@@ -334,13 +334,13 @@ class TelegramBot:
                 close_side = "SELL" if amt > 0 else "BUY"
                 is_hedge = await self.trader.client.get_position_mode()
                 ps = ("LONG" if amt > 0 else "SHORT") if is_hedge else "BOTH"
-                await self.trader.client.place_market_close(
+                await self.trader.client.place_limit_close(
                     symbol=symbol,
                     side=close_side,
                     quantity=str(abs(amt)),
                     position_side=ps,
                 )
-                return f"✅ 已发送 {symbol} 市价平仓指令 ({close_side} {abs(amt)})"
+                return f"✅ 已发送 {symbol} 限价平仓指令 ({close_side} {abs(amt)})"
         except Exception as e:
             return f"❌ 平仓失败: {e}"
 

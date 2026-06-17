@@ -195,7 +195,6 @@ class ConfigResponse(BaseModel):
     margin_mode: str
     margin_pct: float
     monitor_interval_seconds: int
-    paper_trading: bool = False
     rolling: RollingParamsResponse
     strategies: list[StrategyManifestItem]
     #: 进程内每路策略的最终 Rolling 快照（顺序与 scanner 一致；多路时右栏逐条展示）
@@ -214,7 +213,6 @@ class UpdateConfigRequest(BaseModel):
     daily_loss_limit_usdt: float | None = None
     margin_mode: str | None = None
     margin_pct: float | None = None
-    paper_trading: bool | None = None
 
 
 class QuotaItem(BaseModel):
@@ -843,7 +841,6 @@ def create_app(trader) -> FastAPI:
             margin_mode=c.margin_mode,
             margin_pct=c.margin_pct,
             monitor_interval_seconds=c.monitor_interval_seconds,
-            paper_trading=bool(getattr(c, "paper_trading", False)),
             rolling=rolling,
             strategies=manifests,
             strategy_runtimes=runtimes,
@@ -868,8 +865,6 @@ def create_app(trader) -> FastAPI:
             c.margin_mode = req.margin_mode
         if req.margin_pct is not None:
             c.margin_pct = req.margin_pct
-        if req.paper_trading is not None:
-            c.paper_trading = bool(req.paper_trading)
         c.save_to_file()
         logger.info("配置已更新 (via API)")
         return {
@@ -880,7 +875,6 @@ def create_app(trader) -> FastAPI:
             "daily_loss_limit_usdt": float(c.daily_loss_limit_usdt),
             "margin_mode": c.margin_mode,
             "margin_pct": c.margin_pct,
-            "paper_trading": c.paper_trading,
             "message": "配置已保存",
         }
 
@@ -1171,13 +1165,13 @@ def create_app(trader) -> FastAPI:
                 close_side = "SELL" if amt > 0 else "BUY"
                 is_hedge = await trader.client.get_position_mode()
                 ps = ("LONG" if amt > 0 else "SHORT") if is_hedge else "BOTH"
-                await trader.client.place_market_close(
+                await trader.client.place_limit_close(
                     symbol=sym,
                     side=close_side,
                     quantity=str(abs(amt)),
                     position_side=ps,
                 )
-                return {"status": "ok", "message": f"Market closed {sym} ({close_side} {abs(amt)})"}
+                return {"status": "ok", "message": f"Limit closed {sym} ({close_side} {abs(amt)})"}
         except Exception as e:
             raise HTTPException(500, detail=str(e))
 

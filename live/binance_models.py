@@ -295,7 +295,7 @@ class PositionRisk(BinanceBaseModel):
 
 
 # =============================================================================
-# Algo Order Response (conditional orders: STOP_MARKET, TAKE_PROFIT_MARKET)
+# Algo Order Response (conditional orders: STOP, TAKE_PROFIT, etc.)
 # =============================================================================
 
 

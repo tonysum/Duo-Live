@@ -126,7 +126,6 @@ export interface Config {
   margin_mode: string;
   margin_pct: number;
   monitor_interval_seconds: number;
-  paper_trading: boolean;
   rolling: RollingRuntimeParams;
   strategies: StrategyManifestItem[];
   /** 进程内每路策略的 Rolling 快照（多路时与 rolling 主快照同源为首路） */

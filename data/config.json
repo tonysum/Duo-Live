@@ -1,5 +1,4 @@
 {
-  "paper_trading": false,
   "leverage": 5,
   "max_positions": 7,
   "max_entries_per_day": 7,

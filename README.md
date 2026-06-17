@@ -46,8 +46,7 @@
 
 ### 交易与风控（基础设施层）
 
-- **模拟盘 `paper_trading`**：在 [`data/config.json`](data/config.json) 设 `"paper_trading": true`（或 `POST /api/config`）后重启进程。仍用真实行情与策略过滤/配额，**不向交易所下开仓单**；信号与模拟成交写入 SQLite（`live_trades.is_paper=1`、`paper_positions` 表）。模拟平仓由 `PaperTradingLoop` 按标记价 + `evaluate_position` + 价格触及 TP/SL 驱动。**注意**：`paper_trading` 在进程启动时初始化；改配置需重启 trader。模拟盘可不依赖「自动交易」开关即可尝试入场；实盘下单仍须 `auto_trade` 且 `paper_trading=false`。
-- **自动交易开关**：默认关闭；需 `python -m live run --auto-trade` 或在前端打开，才会对信号**真实**下单（且 `paper_trading` 须为 false）。
+- **自动交易开关**：默认关闭；需 `python -m live run --auto-trade` 或在前端打开，才会对信号**真实**下单。
 - **仓位与资金**：`max_positions`、`max_entries_per_day`、`daily_loss_limit_usdt`；单笔保证金 `live_fixed_margin_usdt` 或 `margin_mode` + `margin_pct`。
 - **队列侧批量**：信号先入队，消费端 **合并当前队列 + 等待 10s**，再按涨幅排序、按空余槽位 **串行** 尝试入场。
 

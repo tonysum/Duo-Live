@@ -2,8 +2,8 @@
 
 Places a SHORT entry (LIMIT SELL) with automatic take-profit and stop-loss:
   - Entry: LIMIT SELL @ given price
-  - TP: TAKE_PROFIT_MARKET BUY @ price × (1 − tp_pct/100), closePosition=true
-  - SL: STOP_MARKET BUY @ price × (1 + sl_pct/100), closePosition=true
+  - TP: TAKE_PROFIT (limit) @ entry × (1 − tp_pct/100), trigger=price
+  - SL: STOP (limit) @ entry × (1 + sl_pct/100), trigger=price
 
 Automatically detects position mode (one-way vs hedge) and adapts positionSide.
 """
@@ -20,6 +20,17 @@ from .binance_client import BinanceFuturesClient, BinanceAPIError
 from .binance_models import AlgoOrderResponse, OrderResponse
 
 logger = logging.getLogger(__name__)
+
+TP_ALGO_TYPE = "TAKE_PROFIT"
+SL_ALGO_TYPE = "STOP"
+
+
+def is_tp_algo_type(order_type: str) -> bool:
+    return order_type in (TP_ALGO_TYPE, "TAKE_PROFIT_MARKET")
+
+
+def is_sl_algo_type(order_type: str) -> bool:
+    return order_type in (SL_ALGO_TYPE, "STOP_MARKET")
 
 
 class LiveOrderExecutor:
@@ -199,6 +210,41 @@ class LiveOrderExecutor:
 
         return result
 
+    async def place_tp_sl_algo_order(
+        self,
+        symbol: str,
+        close_side: str,
+        pos_side: str,
+        kind: str,
+        trigger_price: str,
+        quantity: str,
+        client_algo_id: str,
+    ) -> AlgoOrderResponse:
+        """Place a limit TP/SL conditional algo order (TAKE_PROFIT or STOP)."""
+        if kind not in ("tp", "sl"):
+            raise ValueError(f"kind must be 'tp' or 'sl', got '{kind}'")
+        algo_type = TP_ALGO_TYPE if kind == "tp" else SL_ALGO_TYPE
+        label = "止盈" if kind == "tp" else "止损"
+        order = await self.client.place_algo_order(
+            symbol=symbol,
+            side=close_side,
+            positionSide=pos_side,
+            type=algo_type,
+            triggerPrice=trigger_price,
+            price=trigger_price,
+            timeInForce="GTC",
+            quantity=quantity,
+            reduceOnly="true",
+            priceProtect="true",
+            workingType="CONTRACT_PRICE",
+            clientAlgoId=client_algo_id,
+        )
+        logger.info(
+            "✅ %s限价单已挂出: algoId=%s, triggerPrice=%s, price=%s",
+            label, order.algo_id, trigger_price, trigger_price,
+        )
+        return order
+
     async def place_tp_sl(
         self,
         symbol: str,
@@ -209,55 +255,39 @@ class LiveOrderExecutor:
         quantity: str,
         order_prefix: str,
     ) -> dict[str, Any]:
-        """Place TP/SL algo orders (called by monitor after entry fills).
+        """Place TP/SL limit algo orders (called by monitor after entry fills).
 
         Returns dict with tp_order and sl_order.
         """
         result: dict[str, Any] = {}
 
-        # ── Take-profit: TAKE_PROFIT_MARKET ───────────────────────────
         try:
-            tp_order = await self.client.place_algo_order(
+            tp_order = await self.place_tp_sl_algo_order(
                 symbol=symbol,
-                side=close_side,
-                positionSide=pos_side,
-                type="TAKE_PROFIT_MARKET",
-                triggerPrice=tp_price,
+                close_side=close_side,
+                pos_side=pos_side,
+                kind="tp",
+                trigger_price=tp_price,
                 quantity=quantity,
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"tp_{order_prefix}",
+                client_algo_id=f"tp_{order_prefix}",
             )
             result["tp_order"] = tp_order
-            logger.info(
-                "✅ 止盈单已挂出: algoId=%s, triggerPrice=%s",
-                tp_order.algo_id, tp_price,
-            )
         except (BinanceAPIError, Exception) as e:
             logger.error("❌ 止盈单失败: %s", e)
             result["tp_order"] = None
             result["tp_error"] = str(e)
 
-        # ── Stop-loss: STOP_MARKET ────────────────────────────────────
         try:
-            sl_order = await self.client.place_algo_order(
+            sl_order = await self.place_tp_sl_algo_order(
                 symbol=symbol,
-                side=close_side,
-                positionSide=pos_side,
-                type="STOP_MARKET",
-                triggerPrice=sl_price,
+                close_side=close_side,
+                pos_side=pos_side,
+                kind="sl",
+                trigger_price=sl_price,
                 quantity=quantity,
-                reduceOnly="true",
-                priceProtect="true",
-                workingType="CONTRACT_PRICE",
-                clientAlgoId=f"sl_{order_prefix}",
+                client_algo_id=f"sl_{order_prefix}",
             )
             result["sl_order"] = sl_order
-            logger.info(
-                "✅ 止损单已挂出: algoId=%s, triggerPrice=%s",
-                sl_order.algo_id, sl_price,
-            )
         except (BinanceAPIError, Exception) as e:
             logger.error("❌ 止损单失败: %s", e)
             result["sl_order"] = None
